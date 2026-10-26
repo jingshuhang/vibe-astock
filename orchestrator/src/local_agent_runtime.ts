@@ -709,7 +709,8 @@ export function localSubscriptionEnv(base: NodeJS.ProcessEnv, agent: LocalAgentI
   const keys = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
     "TMPDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
     "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    // ⚠️ 故意不把代理变量带进子进程：CLI 可能需要直连本机内部服务（如 WorkBuddy 的认证端口），
+    //    系统代理会把这类请求劫持到外部，导致认证探测失败。
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"];
   if (agent === "claude") keys.push("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN");
   // Codex 的 ChatGPT 登录在用户自己的 CODEX_HOME（缺省 ~/.codex）。CODEX_API_KEY / OPENAI_API_KEY
