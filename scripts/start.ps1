@@ -4,6 +4,14 @@
 param([switch]$Prebuilt, [switch]$NoOpen, [int]$Port = 0, [int]$ApiPort = 0)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+# 设置 Agnes AI API Key（从 WorkBuddy models.json 读取）
+if (-not $env:AGNES_API_KEY) {
+  try {
+    $modelsJson = Get-Content "$env:USERPROFILE\.workbuddy\models.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+    $agnesModel = $modelsJson | Where-Object { $_.id -eq "custom-local:agnes-2.5-flash" } | Select-Object -First 1
+    if ($agnesModel) { $env:AGNES_API_KEY = $agnesModel.apiKey }
+  } catch {}
+}
 # Node 运行时预检:版本不够或构建未启用 TypeScript 支持时给出指引,而不是 ERR_UNKNOWN_FILE_EXTENSION(#38)
 & node (Join-Path $root "scripts\check-node.mjs")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
