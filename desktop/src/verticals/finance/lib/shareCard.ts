@@ -125,6 +125,9 @@ export function shareSummary(r: ShareCardResult): string[] {
 
 export type ShareCtx = Pick<CanvasRenderingContext2D, "font" | "fillStyle" | "strokeStyle" | "lineWidth" | "textAlign" | "textBaseline"
   | "fillText" | "measureText" | "fillRect">;
+/** 竖版内容少时,剩下的高度分到三处段落间距里,每处最多这么多 */
+const SPREAD_MAX = 160;
+
 export const CARD_SIZE = { portrait: { w: 1080, h: 1920 }, landscape: { w: 1920, h: 1080 } } as const;
 export type CardLayout = keyof typeof CARD_SIZE;
 
@@ -272,13 +275,14 @@ function dryRun(ctx: ShareCtx): ShareCtx {
 /**
  * 画整张卡。版式:页眉(名称、代码、完成时间、醒目标记) → 关键数据 → 数量 → 缺口 → 页脚(声明 + 出处)。
  * 竖版从上往下排;横版左边放关键数据,右边放数量和缺口。缺口放在最后,剩多少地方放多少条,其余写「还有 N 处」。
- * 竖版内容少时下面会空一大块:先试排一遍,把剩下的高度分到三处段落间距里(每处最多 120)。
+ * 竖版内容少时下面会空一大块:先试排一遍,把剩下的高度分到三处段落间距里(每处最多 SPREAD_MAX)。
+ * 分配按「剩下多少分多少」而不是只分九成,否则页脚抬高后(声明行数变少)会留一条明显的空带。
  */
 export function drawShareCard(ctx: ShareCtx, r: ShareCardResult, layout: CardLayout): void {
   let spread = 0;
   if (layout === "portrait") {
     const dry = paint(dryRun(ctx), r, layout, 0);
-    spread = Math.min(120, Math.floor((Math.max(0, dry.limit - dry.end - 44) * 0.9) / 3));
+    spread = Math.min(SPREAD_MAX, Math.floor(Math.max(0, dry.limit - dry.end - 44) / 3));
   }
   paint(ctx, r, layout, spread);
 }

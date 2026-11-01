@@ -5,11 +5,19 @@
 export const HOME_FEATURE_GROUPS = [
   { title: "盯盘", detail: "盘中看昨日涨停股和自己的票", features: [
     { to: "/watch", title: "实时动态", detail: "持仓自选、昨日梯队、大票与盘中异动，自动刷新" },
+    { to: "/watch/overview", title: "市场实时概况", detail: "盘中第二步：能不能动、哪里在动、哪只封得死" },
     { to: "/watch/intraday", title: "竞价与盘中", detail: "竞价强弱、全天情绪路径、昨晚条件的盘中读数" },
+  ] },
+  { title: "市场状态", detail: "先判断能不能动", features: [
+    { to: "/market-state", title: "市场状态", detail: "闸门读数、当日全景判断与历史战绩" },
+    { to: "/shortline-opportunities", title: "超短线机会发现", detail: "个股形态与板块共振，逐条给佐证" },
   ] },
   { title: "复盘", detail: "收盘后回头看今天", features: [
     { to: "/shortline", title: "情绪复盘", detail: "赚钱效应、晋级率、亏钱效应与题材延续" },
     { to: "/daily-review", title: "每日复盘", detail: "盘面表现、资金、连板与涨停分档" },
+  ] },
+  { title: "交易计划", detail: "先看今天要处理哪些计划", features: [
+    { to: "/trade-plans", title: "交易计划", detail: "计划先于成交，成交后再回头对照" },
   ] },
   { title: "交易日志", detail: "自己的单子对上当时的情绪", features: [
     { to: "/journal", title: "交易日志", detail: "按情绪环境、板位、打法分组看自己的胜率，在险资金、纪律与模式卡" },

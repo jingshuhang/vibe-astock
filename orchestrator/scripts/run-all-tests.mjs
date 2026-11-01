@@ -10,8 +10,10 @@
 //   node scripts/run-all-tests.mjs --only "market_call,schedule"
 //
 // 报告形状:
-//   { totalFiles, failedFiles, totalTests, failedTests, results: [ { file, ok, code, fail: [名...], error } ] }
-// 只有出现失败用例或进程异常退出的文件才会进 results(通过的文件不占体积)。
+//   { totalFiles, failedFiles, totalTests, failedTests, files: [跑过的文件名...], results: [ { file, ok, code, fail: [名...], error } ] }
+// results 只有出现失败用例或进程异常退出的文件才进(通过的文件不占体积);files 是这次真正跑过的
+// 全部文件 —— 下游靠它区分「--only 拼错一个都没匹配到」和「匹配到的文件全过了」。
+// 只看 results 会把后者误判成前者(两者 results 都是空数组)。
 import { readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -80,6 +82,7 @@ const report = {
   failedFiles: failed.length,
   totalTests: 0, // 单文件 TAP 的汇总行在文件级解析里不取,这里只统计文件与失败用例
   failedTests: results.reduce((n, r) => n + r.fail.length, 0),
+  files: all,
   results: failed,
 };
 process.stdout.write(JSON.stringify(report, null, 2));

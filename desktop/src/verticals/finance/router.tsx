@@ -25,7 +25,6 @@ export const router = createBrowserRouter([
       { path: "/watch/overview", lazy: async () => ({ Component: (await import("@/pages/Watch")).Watch }) },
       { path: "/market-state", lazy: async () => ({ Component: (await import("@/pages/MarketState")).MarketState }) },
       { path: "/shortline-opportunities", lazy: async () => ({ Component: (await import("@/pages/ShortlineOpportunities")).ShortlineOpportunities }) },
-      { path: "/opportunity", lazy: async () => ({ Component: (await import("@/pages/Opportunity")).Opportunity }) },
       { path: "/shortline", lazy: async () => ({ Component: (await import("@/pages/Shortline")).Shortline }) },
       { path: "/shortline/:tab", lazy: async () => ({ Component: (await import("@/pages/Shortline")).Shortline }) },
       { path: "/trade-plans", lazy: async () => ({ Component: (await import("@/pages/TradePlans")).TradePlans }) },
@@ -51,8 +50,8 @@ export const router = createBrowserRouter([
       // 旧地址保留兼容（收藏的书签、旧提醒里的链接）：自选和持仓并成「自选与持仓」。
       // 多空辩论 10-09 又回到单独一页（/debate）；个股页旧的 ?tab=debate 由个股页自己跳过去。
       // 当日机会发现 + 板块机会链 10-30 并成一页（/opportunity）：盘中判断要连着看，分两页反而要来回切
-      { path: "/day-opportunity", element: <Moved to="/opportunity" /> },
-      { path: "/opportunity-chain", element: <Moved to="/opportunity" /> },
+      { path: "/day-opportunity", element: <Moved to="/watch/overview" /> },
+      { path: "/opportunity-chain", element: <Moved to="/watch/overview" /> },
       { path: "/stock-data", element: <Moved to="/research" /> },
       { path: "/watchlist", element: <Moved to="/my-stocks" tab="watch" /> },
       { path: "/portfolio", element: <Moved to="/my-stocks" tab="hold" /> },

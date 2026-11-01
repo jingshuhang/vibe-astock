@@ -46,13 +46,13 @@ test("前端调用:读走 GET,写走 POST JSON,测试只带渠道 id", async () 
   assert.deepEqual(JSON.parse(calls[2]!.body!), { channel: "system" });
 });
 
-test("提醒页:地址和密钥用密码框、不进本地存储,说明只在程序运行时生效,不给买卖建议", () => {
+test("提醒页:地址和密钥用密码框、不进本地存储,说明只在程序运行时生效,能推到哪几个渠道", () => {
   const page = read("pages/Inbox.tsx");
   assert.match(page, /aria-label="Webhook 地址" type="password" autoComplete="off"/);
   assert.match(page, /type="password" autoComplete="off" spellCheck=\{false\} value=\{secret\}/);
   assert.doesNotMatch(page, /localStorage|storageSet|sessionStorage/);
   assert.match(page, /电脑关机或程序没开时不会运行/);
-  assert.match(page, /只列事实,不给买卖建议/);
+  assert.match(page, /也可以推到系统通知或飞书 \/ 企业微信 \/ 钉钉群/);
   assert.match(page, /NOTIFY_CHANGED/);
   const layout = read("components/layout/Layout.tsx");
   assert.match(read("lib/nav.ts"), /\{ to: "\/inbox", label: "提醒", icon: "Bell" \}/);

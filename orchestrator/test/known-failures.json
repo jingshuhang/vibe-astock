@@ -1,18 +1,19 @@
 {
-  "_comment": "本机既有失败基线。由 scripts/test-delta.mjs --update-baseline 生成。门禁只认 file+name,cause 只是给人看的归类。",
-  "generatedAt": "2026-10-31T09:04:22.504Z",
-  "count": 94,
+  "_comment": "本机既有失败基线。由 scripts/test-delta.mjs --update-baseline 生成。门禁只认 file+name;cause 是给人看的归类(env-*=环境性换机即绿,code-*=真实代码问题待修)。flaky:true 的条目偶发失败,本轮通过也不移除。",
+  "generatedAt": "2026-11-01T06:05:52.286Z",
+  "count": 87,
+  "flakyCount": 1,
   "byCause": {
     "env-encoding": 3,
-    "code-or-unclear": 32,
+    "code-or-unclear": 29,
     "env-symlink": 19,
     "env-platform": 6,
-    "code-guardrail": 6,
+    "code-guardrail": 4,
     "env-spawn": 16,
     "env-sandbox": 4,
-    "code-inconsistent": 3,
     "env-no-ai": 4,
-    "env-network": 1
+    "env-network": 1,
+    "code-inconsistent": 1
   },
   "entries": [
     {
@@ -31,13 +32,13 @@
       "file": "audit_chain.test.ts",
       "name": "登记簿是符号链接 → 拒绝读写",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vr-audit-elsewhere-4hFCFy\\\\chain.jsonl' -> 'C:\\\\Users\\\\510"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vr-audit-elsewhere-niqz5i\\\\chain.jsonl' -> 'C:\\\\Users\\\\510"
     },
     {
       "file": "batch_alerts.test.ts",
       "name": "HTTP 变化提醒沿用当前数据根且只读，不读取或覆盖默认用户档案",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-ba-fpt4So\\\\.local\\\\runs\\\\a2\\\\evidence.json' -> 'C:\\\\Us"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-ba-MMVPRz\\\\.local\\\\runs\\\\a2\\\\evidence.json' -> 'C:\\\\Us"
     },
     {
       "file": "browser_ui.test.ts",
@@ -115,7 +116,7 @@
       "file": "fixture.test.ts",
       "name": "🔴 符号链接:夹具内的链接文件与链接目录都要拒绝(词法校验挡不住)",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-GLs3UV\\\\secret.json' -> 'C:\\\\Users\\\\51092\\\\AppData"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-2gZnrM\\\\secret.json' -> 'C:\\\\Users\\\\51092\\\\AppData"
     },
     {
       "file": "guided_tool.test.ts",
@@ -145,7 +146,7 @@
       "file": "ingest_tools.test.ts",
       "name": "替换文件、符号链接、篡改读取凭据都不得升级为已完整读取",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink '01_rows.txt' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-ingest-tools-YjtfTc\\\\02_shot.png'\""
+      "err": "\"EPERM: operation not permitted, symlink '01_rows.txt' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-ingest-tools-SoNpzA\\\\02_shot.png'\""
     },
     {
       "file": "init_doctor.test.ts",
@@ -157,19 +158,13 @@
       "file": "init_doctor.test.ts",
       "name": "doctor:假 exec + 假 Agent 探测 → 全绿;没有可用大脑 → warn;默认来源不可用 / Python 导入失败 → fail 与修复提示;退出码 0 / 2 / 3",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out2-vCll3K' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Tem"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out2-9XRm3u' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Tem"
     },
     {
       "file": "init_doctor.test.ts",
       "name": "init:幂等建 .local 目录 + 配置骨架 + .gitignore;已有配置不改;--force 先备份;不替用户选默认 AI 来源;不碰产品根之外",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-O4CCK7' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp"
-    },
-    {
-      "file": "llm_wiring.test.ts",
-      "name": "🔴 传输层自己带上用户配置 —— 不靠每个调用方记得传",
-      "cause": "code-or-unclear",
-      "err": "'没解析到 requestRuntime 的实现，断言等于没做'"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-xmVeEq' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp"
     },
     {
       "file": "local_agent_runtime.test.ts",
@@ -196,30 +191,6 @@
       "err": "'reg add HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\VibeResearchTest-WorkBuddy /v DisplayName /d 工作助手 (test) /f 失败:undef"
     },
     {
-      "file": "market_voice.test.ts",
-      "name": "市场声音层:Python textsafe.GATE_WORDS 与 垂类的 gate.patterns 逐字一致(脱敏与合规 gate 同一把尺)",
-      "cause": "code-inconsistent",
-      "err": "Expected values to be strictly deep-equal: + actual - expected + [ + '建仓', + '加仓', + '减仓', + '清仓', + '满仓', + '空仓', + '建议买', + '建议卖', + '可以买'"
-    },
-    {
-      "file": "market_voice.test.ts",
-      "name": "硬测试注入 applyVoiceInjection:只追加本脚本的条目、文本经动作词脱敏、形状与 mapper 一致、source=injected 且 raw_ref=null(不冒充真实来源)、id 确定且唯一;无注入项 / 信封缺失 → 空",
-      "cause": "code-or-unclear",
-      "err": "The expression evaluated to a falsy value: assert.ok(!e.value.includes(\"目标价\") && !e.value.includes(\"建议买\") && e.value.includes(\"〔动作词〕\") && e."
-    },
-    {
-      "file": "market_voice.test.ts",
-      "name": "gate 规范化匹配:空格 / 不可见字符 / 繁体 / 分隔符拆写的动作词照样命中;公司行为「股东拟增持」不误伤",
-      "cause": "code-or-unclear",
-      "err": "建 仓 true !== false"
-    },
-    {
-      "file": "market_voice.test.ts",
-      "name": "voice-r2:gate 对斜线 / 加号 / U+2015 / 组合附加符拆写同样命中,且分隔符集合与 textsafe.py 逐字一致",
-      "cause": "code-inconsistent",
-      "err": "建/仓 true !== false"
-    },
-    {
       "file": "methodology.test.ts",
       "name": "合规重写提示词带宪法 + 报告阶段手册 + 计算函数契约,并指明用 read_run_file / write_report 改原文",
       "cause": "code-or-unclear",
@@ -229,7 +200,7 @@
       "file": "notify.test.ts",
       "name": "🔴 notify 目录或文件是符号链接 → 读写一律拒绝,数据目录外的文件一个字节不变(审计 A2)",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-notify-out-FBBrq0' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Loca"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-notify-out-nbXRPX' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Loca"
     },
     {
       "file": "page_query.test.ts",
@@ -259,13 +230,13 @@
       "file": "progress.test.ts",
       "name": "符号链接读不到:stages 里的链接一律拒绝",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-prog-lrk6Oh\\\\outside.json' -> 'C:\\\\Users\\\\51092\\\\AppDa"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-prog-zz1QIj\\\\outside.json' -> 'C:\\\\Users\\\\51092\\\\AppDa"
     },
     {
       "file": "progress.test.ts",
       "name": "stages 目录本身是符号链接时也一律拒绝",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-dUunjm' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-out-dtDeh7' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp"
     },
     {
       "file": "providers.test.ts",
@@ -277,25 +248,19 @@
       "file": "providers.test.ts",
       "name": "用户覆盖模板是符号链接 / 目录 / JSON null → 报错,不悄悄改用产品模板;没有覆盖才用产品模板",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-override-target-26XoCy\\\\deepseek.json' -> 'C:\\\\Users\\\\"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-override-target-A6Nlxy\\\\deepseek.json' -> 'C:\\\\Users\\\\"
     },
     {
       "file": "providers.test.ts",
       "name": "providers 目录是符号链接 / 解析到根之外 → 拒绝(即使 id 合法)",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-2mZF9Q' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-F90OrD' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
     },
     {
       "file": "quick_engine.test.ts",
       "name": "模型引用不存在的材料版本、段落编号无效或命中合规红线时拒绝交付",
       "cause": "code-or-unclear",
       "err": "Expected values to be strictly deep-equal: + actual - expected [ 'started', + 'artifact', + 'completed' - 'failed' ]"
-    },
-    {
-      "file": "readme_numbers.test.ts",
-      "name": "README 栏目数和栏目名跟左侧导航一致",
-      "cause": "code-guardrail",
-      "err": "中文 README「N 个一级栏目」写的是 10,实际是 12 10 !== 12"
     },
     {
       "file": "registry.test.ts",
@@ -307,7 +272,7 @@
       "file": "report_library.test.ts",
       "name": "研报目录里的符号链接不能把上传写到用户数据根之外",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-reports-8Zy3fo' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-reports-FYB6fX' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
     },
     {
       "file": "research_cancel.test.ts",
@@ -343,7 +308,7 @@
       "file": "run_compare.test.ts",
       "name": "研究对比挑哪几次:同一对象、同一市场、同为正式 / 测试、已结束(失败也算),从新到旧最多 8 次,这一次总在里面",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vr-compare-out-jdY1Xr' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Loca"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vr-compare-out-Ah4mVa' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Loca"
     },
     {
       "file": "run_compare.test.ts",
@@ -361,7 +326,7 @@
       "file": "run.test.ts",
       "name": "makeConfig 默认值、run-id 形态、解释器根、取数子进程环境与日志脱敏清单",
       "cause": "code-or-unclear",
-      "err": "Expected values to be strictly equal: + actual - expected + 'C:\\\\tmp\\\\repo\\\\.local\\\\runs\\\\20261031-164933-600519' - '/tmp/repo/.local/runs/2"
+      "err": "Expected values to be strictly equal: + actual - expected + 'C:\\\\tmp\\\\repo\\\\.local\\\\runs\\\\20261101-140400-600519' - '/tmp/repo/.local/runs/2"
     },
     {
       "file": "schedule_watch_job.test.ts",
@@ -391,7 +356,8 @@
       "file": "service_api_mcp.test.ts",
       "name": "请求体上限按字节算,不按字符算(一个中文 3 字节却只算 1 个字符)",
       "cause": "env-network",
-      "err": "'fetch failed'"
+      "err": "'fetch failed'",
+      "flaky": true
     },
     {
       "file": "service_api_mcp.test.ts",
@@ -403,7 +369,7 @@
       "file": "service_api_mcp.test.ts",
       "name": "台账全量读取也要过 safePath —— 防线只在次要入口生效等于没有防线",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-HBKXt2\\\\evil.json' -> 'C:\\\\Users\\\\51092\\\\AppDa"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-BKHDNa\\\\evil.json' -> 'C:\\\\Users\\\\51092\\\\AppDa"
     },
     {
       "file": "service_api_mcp.test.ts",
@@ -421,13 +387,13 @@
       "file": "service_api_mcp.test.ts",
       "name": "service:符号链接穿越被拒(运行目录 / 产物文件 / session 目录)",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-IIq2kE' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-outside-amYX67' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\"
     },
     {
       "file": "share_card.test.ts",
       "name": "拒绝:编号不合法、没有这次研究、报告没通过最终校验 / 没有报告、文件是符号链接;证据文件坏了就当没有",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-share-JZVh3E\\\\outside.json' -> 'C:\\\\Users\\\\51092\\\\AppD"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-share-KPTnh8\\\\outside.json' -> 'C:\\\\Users\\\\51092\\\\AppD"
     },
     {
       "file": "share_card.test.ts",
@@ -523,7 +489,7 @@
       "file": "snapshot.test.ts",
       "name": "快照目录或文件是符号链接时不读也不写,外面的文件保持不变(第四轮审计 A3)",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-snap-mFIM9k' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Tem"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-snap-TmZnW3' -> 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Tem"
     },
     {
       "file": "startup.test.ts",
@@ -544,12 +510,6 @@
       "err": "Expected values to be strictly deep-equal: + actual - expected { count: 2, label: '联网搜索', links: [ { + title: '某券商给出目标价', - title: '', url: "
     },
     {
-      "file": "ui_boundary.test.ts",
-      "name": "导航与路由双向对得上 —— 有导航没路由=点了白屏,有路由没导航=永远点不到",
-      "cause": "code-guardrail",
-      "err": "有路由不在导航里(永远点不到) + actual - expected + [ + '/opportunity' + ] - []"
-    },
-    {
       "file": "va_import.test.ts",
       "name": "坏文件:读不出 / 符号链接 / 卖超 都跳过并说明,不影响其余",
       "cause": "env-symlink",
@@ -559,7 +519,7 @@
       "file": "va_import.test.ts",
       "name": "文件夹是符号链接 / 读不了:整组不读并说明(不只查最后那个文件);同一分钟的两个深挖版本都导",
       "cause": "env-symlink",
-      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-va-import-XCFims\\\\outside\\\\journal' -> 'C:\\\\Users\\\\510"
+      "err": "\"EPERM: operation not permitted, symlink 'C:\\\\Users\\\\51092\\\\AppData\\\\Local\\\\Temp\\\\vra-va-import-LSZrvN\\\\outside\\\\journal' -> 'C:\\\\Users\\\\510"
     },
     {
       "file": "validator.test.ts",

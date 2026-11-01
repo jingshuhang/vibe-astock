@@ -19,6 +19,19 @@ import { checkAgentTrace, commandSafetyErrors } from "../src/validator.ts";
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/**
+ * 私人版(个人使用、不对外发布)已把合规 gate 的五张表置空 —— 见 src/finance/gate_rules.ts 头注。
+ * 下面几条用例校验的是「词表非空时的拦截与脱敏行为」,词表空时前提不成立。
+ * 处置:**跳过而不是删掉**。将来要把五张表填回原值(恢复对外合规),这些断言会自动重新生效,
+ * 不会因为当年删了测试而失去回归保护。
+ */
+const GATE_EMPTY = gatePatterns().length === 0;
+function skipIfGateEmpty(t: { skip: (msg?: string) => void }, why: string): boolean {
+  if (!GATE_EMPTY) return false;
+  t.skip(`私人版合规 gate 词表已置空(${why});填回 gate_rules.ts 五张表后本条自动恢复`);
+  return true;
+}
+
 test("市场声音层:注册表两个端点挂在 risk(optional)、CN、默认启用、模块 / mapper 可被 Python 导入", () => {
   const reg = loadRegistry(REPO);
   assert.ok(reg);
@@ -48,7 +61,8 @@ test("市场声音层:risk 阶段 extra_findings 允许 topic「市场声音」;
   assert.ok(cr.includes("risk(市场声音)") && cr.includes("「市场声音」"));
 });
 
-test("市场声音层:Python textsafe.GATE_WORDS 与 垂类的 gate.patterns 逐字一致(脱敏与合规 gate 同一把尺)", () => {
+test("市场声音层:Python textsafe.GATE_WORDS 与 垂类的 gate.patterns 逐字一致(脱敏与合规 gate 同一把尺)", (t) => {
+  if (skipIfGateEmpty(t, "两边词表比对需要非空")) return;
   const py = fs.readFileSync(path.join(REPO, ".agents", "skills", "data-access", "scripts", "sources", "textsafe.py"), "utf8");
   const start = py.indexOf("GATE_WORDS = [");
   const block = py.slice(start, py.indexOf("]", start));
@@ -56,7 +70,8 @@ test("市场声音层:Python textsafe.GATE_WORDS 与 垂类的 gate.patterns 逐
   assert.deepEqual(words, gatePatterns());
 });
 
-test("硬测试注入 applyVoiceInjection:只追加本脚本的条目、文本经动作词脱敏、形状与 mapper 一致、source=injected 且 raw_ref=null(不冒充真实来源)、id 确定且唯一;无注入项 / 信封缺失 → 空", () => {
+test("硬测试注入 applyVoiceInjection:只追加本脚本的条目、文本经动作词脱敏、形状与 mapper 一致、source=injected 且 raw_ref=null(不冒充真实来源)、id 确定且唯一;无注入项 / 信封缺失 → 空", (t) => {
+  if (skipIfGateEmpty(t, "动作词脱敏需要非空词表")) return;
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-voice-inj-"));
   const file = path.join(d, "exa_market_voice.json");
   writeJson(file, { script: "exa_market_voice", status: "ok", evidence: [{ id: "ev-aaaaaa", field: "web_result", value: "x", raw_ref: "raw/exa_1.txt" }], extra: {} });
@@ -91,7 +106,8 @@ test("附录链接列 linkOf:从 note 的 link=… 取原文链接(到分号止)
   assert.equal(linkOf("link=ftp://nope"), "");
 });
 
-test("gate 规范化匹配:空格 / 不可见字符 / 繁体 / 分隔符拆写的动作词照样命中;公司行为「股东拟增持」不误伤", () => {
+test("gate 规范化匹配:空格 / 不可见字符 / 繁体 / 分隔符拆写的动作词照样命中;公司行为「股东拟增持」不误伤", (t) => {
+  if (skipIfGateEmpty(t, "gate 命中判定需要非空词表")) return;
   for (const bad of ["建 仓", "建\u034f仓", "目\ufe0f标价 1500", "目標價 1500", "逢低買入", "止-损位", "建议增持评级"]) assert.equal(complianceGate(bad).ok, false, bad);
   assert.equal(complianceGate("控股股东拟增持公司股份 2%(公告)").ok, true);
   assert.equal(complianceGate("业绩, 订单 进展。光模块-算力").ok, true);
@@ -150,8 +166,11 @@ test("makeConfig 规范化解释器路径:repo/../.venv/bin/python 不再把 ../
   assert.equal(normalizeInterpreter(" ./x/../bin/python "), path.resolve("bin/python"));
 });
 
-test("voice-r2:gate 对斜线 / 加号 / U+2015 / 组合附加符拆写同样命中,且分隔符集合与 textsafe.py 逐字一致", () => {
-  for (const bad of ["建/仓", "目／标／价", "建议+买入", "建\u0301仓", "建―仓", "建＋仓"]) assert.equal(complianceGate(bad).ok, false, bad);
+test("voice-r2:gate 对斜线 / 加号 / U+2015 / 组合附加符拆写同样命中,且分隔符集合与 textsafe.py 逐字一致", (t) => {
+  // 前半段(gate 命中)要非空词表;后半段(分隔符集合)与词表无关,任何时候都校验。
+  if (!skipIfGateEmpty(t, "gate 命中判定需要非空词表")) {
+    for (const bad of ["建/仓", "目／标／价", "建议+买入", "建\u0301仓", "建―仓", "建＋仓"]) assert.equal(complianceGate(bad).ok, false, bad);
+  }
   const here = path.dirname(fileURLToPath(import.meta.url));
   const py = fs.readFileSync(path.join(here, "..", "..", ".agents", "skills", "data-access", "scripts", "sources", "textsafe.py"), "utf-8");
   const m = /CJK_SEP_CHARS = "((?:[^"\\]|\\.)*)"/.exec(py)!;

@@ -59,9 +59,9 @@ test("前端调用:GET /view/candidates,查询串原样带上", async () => {
   assert.deepEqual(urls, ["/api/view/candidates?universe=hs300&pb_max=1"]);
 });
 
-test("页面:不排名、不给建议、缺数据单独列出、条件只存在本机偏好里;导航和首页都有入口", () => {
+test("页面:只排除不排名不打分、缺数据单独列出、条件只存在本机偏好里;导航和首页都有入口", () => {
   const src = read("pages/Candidates.tsx");
-  assert.match(src, /只排除、不排名,不打分、不给买卖建议/);
+  assert.match(src, /只排除、不排名,不打分/);
   assert.match(src, /按代码排列,不排名/);
   assert.match(src, /不是选股结论/);
   assert.match(src, /没取到的不算「不满足」/);

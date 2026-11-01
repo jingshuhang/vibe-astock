@@ -43,9 +43,9 @@ test("前端调用:GET /view/calendar,参数只带天数和是否重新取", asy
   assert.deepEqual(urls, ["/api/view/calendar", "/api/view/calendar?days=90&refresh=1"]);
 });
 
-test("页面:不给建议、取不到单独列出、选择只存在本机偏好里", () => {
+test("页面:只列来源给的日期不打分、取不到单独列出、选择只存在本机偏好里", () => {
   const src = read("pages/Calendar.tsx");
-  assert.match(src, /不打分、不给买卖建议/);
+  assert.match(src, /只列来源给的日期,不打分/);
   assert.match(src, /没查到的/);
   assert.match(src, /不代表真的没有/);
   assert.match(src, /storageSet\("vr-calendar-groups"/);
