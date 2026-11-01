@@ -76,10 +76,15 @@ test("提示词只讲受控工具:不再出现 Shell / 钩子 / 绝对路径时�
   }
 });
 
-test("合规重写提示词带宪法 + 报告阶段手册 + 计算函数契约,并指明用 read_run_file / write_report 改原文", () => {
+test("重写提示词带宪法(照原文) + 报告阶段手册 + 计算函数契约,并指明用 read_run_file / write_report 改原文", () => {
   const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: REPO, runId: "m-gate" });
   const p = buildGateRewritePrompt(cfg, [{ line: 3, pattern: "x", text: "某句" }]);
-  assert.ok(p.includes("<<<CONSTITUTION_BEGIN>>>") && p.includes("研究宪法 §0 第 3 条红线"));
+  // 断言「原文进来了」而不是「第 3 条写的是某某红线」:私人版把第 3 条从合规红线改成了
+  // 「可给参考性结论」,硬编码字面量会随文案一起红。照文件现内容比对,才是真在检查搬运。
+  const constitution = fs.readFileSync(path.join(REPO, CONSTITUTION_REL), "utf8");
+  const thirdRule = constitution.split("\n").find((l) => l.startsWith("3. ⛔"));
+  assert.ok(thirdRule, "宪法 §0 第 3 条应以「3. ⛔」开头");
+  assert.ok(p.includes("<<<CONSTITUTION_BEGIN>>>") && p.includes(thirdRule));
   // 重写的是整份报告:报告骨架、裁决点写法在报告阶段的手册里,数字口径在计算函数契约里;只给宪法,重写稿会丢掉这些约束
   const skills = STAGE_SKILLS.report ?? [];
   assert.ok(skills.length >= 2, "报告阶段应有 company-research 与 catalyst-risk 两本手册");

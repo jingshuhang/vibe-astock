@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { chokePromptBlock, classifyText, loadChokeTable, normTitle, scanChokepoints, selectForPrompt, splitClauses, writeChokeFile, type ChokeHit } from "../src/finance/chokepoint.ts";
 import { buildTests, judgeChokepoint } from "../src/finance/hardtest.ts";
 import { applyAnnouncementInjection } from "../src/fetchrun.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { extraTopics } from "../src/schemas.ts";
 
@@ -201,7 +202,11 @@ test("applyAnnouncementInjection:只追加到目标脚本,source=injected / raw_
   const env = JSON.parse(fs.readFileSync(file, "utf-8"));
   const e = env.evidence.find((x: { id: string }) => x.id === ids[0]);
   assert.equal(e.source, "injected"); assert.equal(e.raw_ref, null); assert.equal(e.field, "announcement_title"); assert.equal(e.period, "2026-08-21");
-  assert.ok(e.value.includes("〔动作词〕") && !e.value.includes("建议买") && e.note.includes("injected=hardtest.inject_announcements"));
+  // 脱敏按 gate 词表做(fetchrun 的 mask):私人版词表置空 → 动作措辞原样保留;
+  // 词表填回(恢复对外合规)后,这里应重新被替换成〔动作词〕。
+  if (FINANCE_GATE.patterns.length === 0) assert.ok(e.value.includes("建议买入"), "词表空 → 不脱敏,原样保留");
+  else assert.ok(e.value.includes("〔动作词〕") && !e.value.includes("建议买"), "词表非空 → 动作措辞替换成〔动作词〕");
+  assert.ok(e.note.includes("injected=hardtest.inject_announcements"));
   assert.deepEqual(applyAnnouncementInjection({ symbol: "300308", market: "SZ" }, { inject_announcements: [{ title: "y" }] }, "cninfo_announcements", file), []);
   const failedFile = path.join(d, "fetch", "em_stock_news.json"); const fe = JSON.parse(fs.readFileSync(failedFile, "utf-8")); fe.status = "failed"; writeJson(failedFile, fe);
   assert.deepEqual(applyAnnouncementInjection({ symbol: "300308", market: "SZ" }, { inject_announcements: [{ script: "em_stock_news", title: "z 提价" }] }, "em_stock_news", failedFile), [], "failed 信封不叠加");

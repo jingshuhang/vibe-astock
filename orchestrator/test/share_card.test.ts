@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import "../src/finance/register.ts";
 import "../src/finance/register_tasks.ts";
 import { complianceGate } from "../src/gate.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 import { ServiceError, type ServiceContext } from "../src/service.ts";
 import { listViews } from "../src/views.ts";
 import { GAP_ORDER, mergeGaps, pickFacts, shareCard, shortTitle } from "../src/finance/share_card.ts";
@@ -174,16 +175,23 @@ test("缺口:同一项只留更要紧的那类;名字用注册表中文名 / 内
   ]);
 });
 
-test("卡片会被转发:名称、缺口名过不了产出红线就不放;阶段名不合规的不去读", async () => {
+test("卡片会被转发:卡面文字要过产出红线(私人版 gate 空表则原样放行);阶段名不合规的不去读", async () => {
   const r = fakeRun({ profile: { evidence: [{ field: "security_name", value: "目标价 120 元" }] }, titles: { em_stock_info: "建议买入(测)" },
     manifest: { stages: [{ stage: "../evil", status: "complete" }, { stage: "profile", status: "complete" }] } });
   try {
     // 阶段名「../evil」会读到 runs/r1/evil.json:不合规的名字根本不该去读
     fs.writeFileSync(path.join(r.dir, "evil.json"), JSON.stringify({ gaps: [{ operation: "evil", reason_code: "source_failed" }] }));
     const out = await shareCard(r.ctx, { run_id: "r1" });
-    assert.equal(out.name, null);
+    // 名称 / 缺口名走 complianceGate:私人版词表置空时 gate 透传,原文照放;
+    // 把词表填回去(恢复对外合规)后,这两处应当重新被拦成 null / 「其他」。
+    const gateEmpty = FINANCE_GATE.patterns.length === 0 && FINANCE_GATE.regexps.length === 0;
+    assert.equal(out.name, gateEmpty ? "目标价 120 元" : null, gateEmpty ? "词表空时 gate 透传" : "词表非空时不该放出");
     assert.deepEqual([out.counts.stages_done, out.counts.stages_total], [2, 2]);
-    assert.deepEqual(out.gaps.map((g) => [g.operation, g.label]), [["em_stock_info", "其他"], ["sw_industry", "申万行业分类"], ["industry-chain", "产业链核对"]], "只读了 profile 阶段");
+    assert.deepEqual(out.gaps.map((g) => [g.operation, g.label]),
+      gateEmpty
+        ? [["em_stock_info", "建议买入"], ["sw_industry", "申万行业分类"], ["industry-chain", "产业链核对"]]
+        : [["em_stock_info", "其他"], ["sw_industry", "申万行业分类"], ["industry-chain", "产业链核对"]],
+      "只读了 profile 阶段");
   } finally { r.done(); }
 });
 

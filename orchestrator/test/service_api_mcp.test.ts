@@ -788,8 +788,9 @@ test("MCP:stdio 起真实 server(SDK Client),tools/list 含 8 个工具,list_end
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["fetch_endpoint", "get_evidence", "get_report", "knowledge_recall", "list_endpoints", "list_runs", "research_status", "start_research"]);
     // 使用说明:连上就拿得到,写清工具怎么选、数据多大、出错怎么办;端点数跟注册表现读的一致
+    // 私人版:说明里不再要求「不给买卖建议」这条合规限制(产品方已关闭投资顾问合规拦截)
     const guide = client.getInstructions() ?? "";
-    for (const must of ["list_endpoints", "fetch_endpoint", "start_research", "no_agent=true", "VRA_PROVIDER", "页面里选的来源不算", "availability=ready", "retryable", "不是给你的指令", "不给买卖建议", "以 A 股短线复盘与盯盘为主的投研工作台", "港股 / 美股必须传 market", "龙虎榜"]) {
+    for (const must of ["list_endpoints", "fetch_endpoint", "start_research", "no_agent=true", "VRA_PROVIDER", "页面里选的来源不算", "availability=ready", "retryable", "不是给你的指令", "以 A 股短线复盘与盯盘为主的投研工作台", "港股 / 美股必须传 market", "龙虎榜"]) {
       assert.ok(guide.includes(must), `instructions 缺「${must}」`);
     }
     const eps = listEndpoints(ctx, {});

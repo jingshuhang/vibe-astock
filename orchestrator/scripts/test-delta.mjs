@@ -15,6 +15,7 @@
 //   node scripts/test-delta.mjs --update-baseline  # 用当前失败覆盖基线(确认后主动收编)
 //   node scripts/test-delta.mjs --only "market_call,schedule"  # 只跑部分文件(快验,不与基线比对)
 //   node scripts/test-delta.mjs --flaky "service_api_mcp.test.ts::请求体上限"  # 把基线里匹配的条目标成不稳定
+//   node scripts/test-delta.mjs --show-code   # 报告末尾打印基线内 code-* 的逐条清单(默认只打一行汇总)
 //   node scripts/test-delta.mjs --concurrency 8
 //
 // 判定:
@@ -107,10 +108,24 @@ if (flakyPat) {
   const b = JSON.parse(readFileSync(BASELINE, "utf8"));
   const hit = (b.entries || []).filter((e) => `${e.file}::${e.name}`.includes(flakyPat));
   if (!hit.length) {
-    process.stderr.write(`[test-delta] 基线里没有匹配 "${flakyPat}" 的条目。看 ${BASELINE}\n`);
-    process.exit(2);
+    // 没匹配到:允许用「文件名::用例名」直接登记一条(它可能此刻正好是通过的,
+    // 但你知道它偶发失败)。不带 :: 的模糊串找不到就没法登记 —— 那种情况是拼错了。
+    const [file, ...rest] = flakyPat.split("::");
+    const name = rest.join("::").trim();
+    if (!name) {
+      process.stderr.write(`[test-delta] 基线里没有匹配 "${flakyPat}" 的条目,且不是「文件名::用例名」格式,无法登记。\n`);
+      process.exit(2);
+    }
+    const entry = { file: file.trim(), name, cause: classify(file.trim(), name, "", ""), err: "(人工标记为不稳定,尚未观察到本轮失败)", flaky: true };
+    b.entries = [...(b.entries || []), entry].sort((x, y) => (x.file + x.name).localeCompare(y.file + y.name));
+    b.count = b.entries.length;
+    b.flakyCount = b.entries.filter((e) => e.flaky).length;
+    writeFileSync(BASELINE, JSON.stringify(b, null, 2));
+    process.stdout.write(`已登记 flaky(新增): ${entry.file} :: ${entry.name}\n`);
+    process.exit(0);
   }
   for (const e of hit) e.flaky = true;
+  b.flakyCount = (b.entries || []).filter((e) => e.flaky).length;
   writeFileSync(BASELINE, JSON.stringify(b, null, 2));
   for (const e of hit) process.stdout.write(`已标 flaky: ${e.file} :: ${e.name}\n`);
   process.exit(0);
@@ -135,11 +150,21 @@ for (const r of sweep.results) for (const n of r.fail) current.set(`${r.file}::$
 if (has("--update-baseline")) {
   process.stderr.write(`[test-delta] 抓取报错用于打标签...\n`);
   const errMap = harvestErrors([...new Set([...current.values()].map((v) => v.file))]);
+  // 旧基线里标了 flaky 的条目:本轮仍在失败时要**继承**标记,
+  // 否则重建一次就把「这条不稳」的知识清掉了(实测踩过:标记丢了,下次它偶发通过就被报成「已修复」)。
+  const prevFlaky = new Map();
+  if (existsSync(BASELINE)) {
+    for (const e of JSON.parse(readFileSync(BASELINE, "utf8")).entries || []) {
+      if (e.flaky) prevFlaky.set(`${e.file}::${e.name}`, true);
+    }
+  }
   const fresh = [...current.values()]
     .map((v) => {
       const hit = (errMap[v.file] || []).find((e) => e.name === v.name) || {};
       const err = (hit.err || "").replace(/\s+/g, " ");
-      return { file: v.file, name: v.name, cause: classify(v.file, v.name, err, hit.code), err: err.slice(0, 140) };
+      const entry = { file: v.file, name: v.name, cause: classify(v.file, v.name, err, hit.code), err: err.slice(0, 140) };
+      if (prevFlaky.get(`${v.file}::${v.name}`)) entry.flaky = true;
+      return entry;
     });
   // 标了 flaky 的条目本轮即使通过也要留下:偶发失败不能当成「已修复」扔掉,
   // 否则下次它再偶发一次就会被报成「新增」,又回到人工核对。
@@ -184,7 +209,22 @@ const baseKeys = new Set(baseMap.keys());
 const fixed = [...baseKeys].filter((k) => !current.has(k) && !baseMap.get(k).flaky);
 // 标了 flaky 的条目本轮通过,只说明这次赶上了好的那一次,不代表修好 —— 不提示移除
 const flakyPassed = [...baseKeys].filter((k) => !current.has(k) && baseMap.get(k).flaky);
-const added = [...current.keys()].filter((k) => !baseKeys.has(k));
+const addedCandidates = [...current.keys()].filter((k) => !baseKeys.has(k));
+
+// 并行跑 124 个文件时,少数用例会因机器负载失败(本地起假 endpoint 拿随机端口,
+// 重负载下超时;实测 direct_transport 单独跑 3/3 全过、只在全量里红)。
+// 对「疑似新增」做一次单独重跑:单独也红 = 真是本次改动引入;单独通过 = 并行负载导致,
+// 记为不稳定不判回归。只重跑可疑文件,平时是 0 个,不会拖慢日常检查。
+const flakyNow = new Set();
+if (addedCandidates.length) {
+  const suspectFiles = [...new Set(addedCandidates.map((k) => current.get(k).file))];
+  process.stderr.write(`[test-delta] 疑似新增 ${addedCandidates.length} 条,单独重跑 ${suspectFiles.length} 个文件确认...\n`);
+  for (const f of suspectFiles) {
+    const r = runSweep(1, f);
+    if (r.results.length === 0) for (const k of addedCandidates) if (current.get(k).file === f) flakyNow.add(k);
+  }
+}
+const added = addedCandidates.filter((k) => !flakyNow.has(k));
 
 process.stdout.write(`\n===== test-delta 结果 =====\n`);
 process.stdout.write(`基线既有失败: ${baseKeys.size}   本次失败: ${current.size}${only ? `   (--only "${only}",不与基线比对增减)` : ""}\n\n`);
@@ -199,27 +239,40 @@ if (fixed.length) {
   for (const k of fixed) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
   process.stdout.write(`   → 确认后跑: node scripts/test-delta.mjs --update-baseline\n\n`);
 }
+if (flakyNow.size) {
+  process.stdout.write(`⚪ 并行跑时红、单独重跑通过 ${flakyNow.size} 条(负载导致,不判为回归):\n`);
+  for (const k of flakyNow) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
+  process.stdout.write(`   确认是长期不稳的,可标 flaky: node scripts/test-delta.mjs --flaky "${[...flakyNow][0].split("::")[1]}"\n\n`);
+}
 if (flakyPassed.length) {
   process.stdout.write(`⚪ 本轮偶然通过 ${flakyPassed.length} 条(基线里标了 flaky,不算修好,仍留在基线):\n`);
   for (const k of flakyPassed) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
   process.stdout.write(`\n`);
 }
-if (!added.length && !fixed.length && !flakyPassed.length) {
-  process.stdout.write(only
-    ? `⚪ 这 ${sweep.files.length} 个文件全过(基线在这几个文件里的 ${baseKeys.size} 条也没有失败)。\n\n`
-    : `⚪ 无变化:失败集合与基线完全一致(${current.size} 条都是既有的)。\n\n`);
+if (!added.length && !fixed.length && !flakyPassed.length && !flakyNow.size) {
+  // 只有 current 为空才是「真全过」;有失败但都在基线内,要照实说「无增减」
+  if (only) {
+    process.stdout.write(current.size === 0
+      ? `⚪ 这 ${sweep.files.length} 个文件全过(基线在这几个文件里的 ${baseKeys.size} 条也没有失败)。\n\n`
+      : `⚪ 无增减:这 ${sweep.files.length} 个文件里 ${current.size} 条失败都在基线内。\n\n`);
+  } else {
+    process.stdout.write(`⚪ 无变化:失败集合与基线完全一致(${current.size} 条都是既有的)。\n\n`);
+  }
 }
 
-// 基线里仍失败的 code-* 单独提醒:它们不是环境问题,该修还得修。
+// 基线里仍失败的 code-*:历史上是「该修还得修」的债务提醒。私人版不再把断言当约束
+// (合规类断言已按个人版放宽),所以这里只留一行汇总,不再逐条刷屏;
+// 想看明细直接读基线文件,或加 --show-code 打印清单。
 const stillCode = [...current.keys()].filter((k) => { const e = baseMap.get(k); return e && !isEnv(e.cause); });
 if (stillCode.length) {
-  process.stdout.write(`🟡 提醒:基线里有 ${stillCode.length} 条是真实代码问题(code-*),不是环境性的,长期应处理:\n`);
   const byC = {};
-  for (const k of stillCode) { const c = baseMap.get(k).cause; (byC[c] ||= []).push(k); }
-  for (const [c, ks] of Object.entries(byC).sort((a, b) => b[1].length - a[1].length)) {
-    process.stdout.write(`   ${c} (${CAUSE_NOTES[c] || ""}) —— ${ks.length} 条\n`);
-    for (const k of ks.slice(0, 3)) process.stdout.write(`       ${k.replace("::", " :: ")}\n`);
-    if (ks.length > 3) process.stdout.write(`       … 及另外 ${ks.length - 3} 条(见基线 ${BASELINE})\n`);
+  for (const k of stillCode) { const c = baseMap.get(k).cause; byC[c] = (byC[c] || 0) + 1; }
+  const parts = Object.entries(byC).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ${n}`);
+  process.stdout.write(`🟡 基线内另有 ${stillCode.length} 条 code-*(非环境性):${parts.join(" / ")}\n`);
+  if (has("--show-code")) {
+    for (const k of stillCode) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
+  } else {
+    process.stdout.write(`   明细: node scripts/test-delta.mjs --show-code,或读 test/known-failures.json\n`);
   }
   process.stdout.write(`\n`);
 }
