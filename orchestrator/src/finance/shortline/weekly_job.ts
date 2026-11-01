@@ -20,6 +20,8 @@ import { LEDGER_KIND, startWeeklyReview, weekStart } from "./weekly_review.ts";
 
 /** 没接 AI 属于配置状态,不是今天的失败(与每日复盘那边同一份判据) */
 const CONFIG_CODES = /^(?:ai_source_not_configured|agent_required|bad_llm|bad_template|provider_renamed|model_not_supported|no_model)$/;
+/** 台账里「写的 AI」这一栏:定时任务写的要能一眼看出不是自己点出来的 */
+const AI_LABEL = "定时任务";
 
 export async function weeklyReviewJob(j: JobContext, deps: { turn?: TurnFn } = {}): Promise<JobResult> {
   const { day } = localClock(j.now, SCHEDULE_TZ);
@@ -33,7 +35,7 @@ export async function weeklyReviewJob(j: JobContext, deps: { turn?: TurnFn } = {
 
   let started;
   try {
-    started = await startWeeklyReview(j.ctx, { date: day }, j.signal, j.now, deps.turn);
+    started = await startWeeklyReview(j.ctx, { date: day, ai: AI_LABEL }, j.signal, j.now, deps.turn);
   } catch (e) {
     if (e instanceof ServiceError && CONFIG_CODES.test(e.code)) return { messages: [], note: `没写:${e.message}` };
     throw e;

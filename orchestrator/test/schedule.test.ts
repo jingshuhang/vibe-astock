@@ -20,9 +20,9 @@ test("金融定时任务在 API 入口注册,形状合法", () => {
   assert.equal(currentSchedule(), FINANCE_SCHEDULE);
   validateSchedule(FINANCE_SCHEDULE);
   assert.equal(FINANCE_SCHEDULE.timeZone, "Asia/Shanghai");
-  assert.deepEqual(FINANCE_SCHEDULE.jobs.map((j) => [j.id, j.at]), [["shortline_premarket", "09:05"], ["close_digest", "15:40"], ["market_call_sync", "16:05"], ["watch_changes", "16:15"], ["verdict_due", "16:30"], ["shortline_close_fetch", "18:35"], ["opportunity_track", "18:45"], ["daily_review_ai", "18:55"], ["weekly_ai_review", "19:10"]]);
-  // 要调模型的两个任务必须自己声明更长的超时:一轮模型调用比 Core 的 5 分钟任务上限长
-  for (const id of ["daily_review_ai", "weekly_ai_review"]) {
+  assert.deepEqual(FINANCE_SCHEDULE.jobs.map((j) => [j.id, j.at]), [["shortline_premarket", "09:05"], ["close_digest", "15:40"], ["market_call_sync", "16:05"], ["watch_changes", "16:15"], ["verdict_due", "16:30"], ["shortline_close_fetch", "18:35"], ["opportunity_track", "18:45"], ["daily_review_ai", "18:55"], ["shortline_review_ai", "19:02"], ["weekly_ai_review", "19:10"]]);
+  // 要调模型的三个任务必须自己声明更长的超时:一轮模型调用比 Core 的 5 分钟任务上限长
+  for (const id of ["daily_review_ai", "shortline_review_ai", "weekly_ai_review"]) {
     const j = FINANCE_SCHEDULE.jobs.find((x) => x.id === id)!;
     assert.ok(typeof j.timeoutMs === "number" && j.timeoutMs > 5 * 60_000, `${id} 没声明够长的 timeoutMs`);
   }

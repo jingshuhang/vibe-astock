@@ -291,7 +291,7 @@ export function ReviewView({ r, onChanged, pick: pickProp, onPick }: { r: Review
   return (
     <div className="space-y-3">
       <Section icon={Sparkles} title="AI 复盘"
-        hint="情绪、资金、题材、龙虎榜、龙头五段各看自己那几块数据、各用一个新对话写,最后汇总并给明日验证提建议。写完程序逐个核对数字和证据编号。每次写完存一版,不覆盖旧版;写一次要几分钟,可以切去别的页面。">
+        hint="情绪、资金、题材、龙虎榜、龙头五段各看自己那几块数据、各用一个新对话写,最后汇总并给明日验证提建议。写完程序逐个核对数字和证据编号。每次写完存一版,不覆盖旧版;写一次要几分钟,可以切去别的页面。「提醒」页里的定时任务「AI 情绪复盘」(默认 19:02,可改可关)会按这一屏自动写一版,台账里标「定时任务」;这一天已经有一版就不再写。">
         <div className="flex flex-wrap items-center gap-2">
           {running ? (
             <>
