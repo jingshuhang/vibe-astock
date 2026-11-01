@@ -21,6 +21,7 @@ import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./con
 import { researchFailure } from "./research_failure.ts";
 import { runAlerts, InsufficientRunsError, type AlertDiff } from "./alerts.ts";
 import { NOFOLLOW_FLAG, nowIso, readJson, readJsonIfExists } from "./fsutil.ts";
+import { pruneRawResponses } from "./raw_retention.ts";
 import { ChatError, REPLY_TRUNCATED, applyGate, chatSend as chatSendCore, llmProbe as llmProbeCore, parseHeadlineTranslationReply, prepareHeadlineTranslation, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult, type LlmProbeResult } from "./chat.ts";
 import { DirectTransportError, chatCompletion } from "./engines/direct_transport.ts";
 import { REQUEST_LLM_META_VAR, RUNTIME_KEY_VAR, assertExecutionMode, defaultLlm, requestLlmMeta, resolveDirectProvider, resolveRuntimeProvider, resolveSelectedRuntime, runtimeSourceFingerprint, RuntimeProviderError, templateMatrix, type LlmOverride, type DefaultSourceOptions } from "./runtime_provider.ts";
@@ -272,6 +273,15 @@ export async function fetchEndpoint(
   fs.mkdirSync(path.join(outDir, "fetch"), { recursive: true });
   fs.mkdirSync(path.join(outDir, "raw"), { recursive: true });
   safePath(ctx, "mcp", session, "fetch");  // 创建后再查一次(防 mkdir 途中被替换成链接)
+  // 原始响应按保留期回收(默认 30 天,`VRA_RAW_RETENTION_DAYS` 可改):盯盘页 2.5~3 秒轮询、
+  // 端点缓存只有 15 秒,不回收就是单日上万个文件、无上限地涨。内部有 1 小时节流,
+  // 高频轮询不会每次都扫目录;这里**绝不能**抛错 —— 清理失败不该让取数失败。
+  try {
+    const pruned = pruneRawResponses(path.join(outDir, "raw"));
+    if (pruned && pruned.removed) {
+      console.error(`[raw] 回收 ${pruned.removed} 份过期原始响应(${(pruned.bytes / 1048576).toFixed(1)}MB)${pruned.failed ? `,${pruned.failed} 份没删掉` : ""}`);
+    }
+  } catch { /* 清不掉就下次再说 */ }
   const scriptsDir = path.join(ctx.repoRoot, ".agents", "skills", "data-access", "scripts");
   // 🔴 命令构造只有一处真相:registry.ts 的 fetchArgv(legacy → 脚本自身;其余 → fetch_endpoint.py)。
   //    这里原先手写了第二份、漏掉 legacy 分支 —— 结果 8 个 legacy 端点经 POST /fetch 一律返回
