@@ -1,9 +1,10 @@
 /**
- * 个股分析(本地规则引擎) —— 技术面三维评分 + 主力行为阶段 + 估值分位 + 筹码 + 股东与事件。
+ * 个股分析(本地规则引擎) —— 技术面三维评分 + 主力行为阶段 + 资金流 + 估值分位 + 筹码 + 股东与事件。
  *
  * 🔴 取数全部走 Vibe-AStock 自己的端点(不新增数据源):
  *   · `tx_kline`            日 K(前复权)→ 全表行在取数器落盘的 raw/extracted_*.json 里,含 OHLCV
  *   · `tx_quotes_batch`     腾讯批量行情 → 现价 / 涨跌幅 / 换手率 / 开高低 / 昨收 / 名称
+ *   · `sina_fund_flow`      日级主力净流入(60 个交易日序列)→ **真金白银的资金证据**
  *   · `bs_valuation_history` 估值序列(PE_TTM / PB / PS / PCF,近 5 年)→ 现值取证据,分位取全表行
  *   · `bs_chip_distribution` 筹码分布(获利比例 / 平均成本 / 90% 成本区间 / 集中度)
  *   · `em_holder_num`       股东户数与环比(basic 层,便宜且信息量大)
@@ -16,6 +17,8 @@
  *   筹码是模型推算、PE 分位是 baostock 口径,这些必须跟着数一起走。
  * 🔴 缓存上限按域的更新频率给(见 MAX_AGE):行情和日 K 是 5 分钟(盘中最后一根还在动),
  *   估值 / 筹码 / 股东是 2~6 小时。**不传 max_age 就等于永不过期** —— 日 K 曾因此读到四天前的快照。
+ * 🔴 资金流与量价**打架时不下判断**:两套证据互相矛盾时阶段一律给「观望」并写明矛盾,
+ *   不挑一个顺眼的留下。以前这个阶段纯看量价,却顶着「主力行为」的名字 —— 那是拿代理当证据。
  */
 
 import { fetchEndpoint, type ServiceContext } from "../service.ts";
@@ -64,8 +67,31 @@ export interface MainCapitalStage {
   factors: string[];
 }
 
-/** 估值位置:贵不贵只能靠分位回答,现值本身没有参照物 */
-export interface ValuationView {
+/**
+ * 资金流向:这是**真金白银**的证据,不是量价代理。
+ * 数据来自新浪 `MoneyFlow` 的日级 netamount(主力净流入),60 个交易日。
+ * 🔴 只给绝对值与「连续同号天数」,不编「占成交额多少」—— 上游 ratioamount 的口径与
+ *    turnover 对不上(15.7 亿净流入 / 19.06% ≠ 47.9 亿成交额),口径没吃透的比率不上屏。
+ * 🔴 一日净流入是噪声,所以判定看的是 5 日 / 20 日两个累计窗口是否同向。
+ */
+export interface MoneyView {
+  as_of: string;
+  window: { from: string; to: string; n: number };
+  /** 主力净流入(元),日级 netamount 累加 */
+  net_1d: number | null;
+  net_5d: number | null;
+  net_10d: number | null;
+  net_20d: number | null;
+  /** 超大单净流入(r0_net)5 日累计(元);上游没有就是 null */
+  big_order_5d: number | null;
+  /** 从最新一个交易日往前数,连续同号的天数:正 = 连续净流入,负 = 连续净流出 */
+  streak: number;
+  /** 资金面方向:5 日与 20 日同向才算有方向,符号相反就是分歧 */
+  trend: "净流入" | "净流出" | "分歧" | "样本不足";
+  note: string;
+}
+
+/** 估值位置:贵不贵只能靠分位回答,现值本身没有参照物 */export interface ValuationView {
   /** 估值序列最后一天 */
   as_of: string;
   window: { from: string; to: string; n: number };
@@ -127,6 +153,7 @@ export interface StockAnalysisResult {
   /** 日 K(近 60 根),给前端画 / 复核用 */
   kline_data: KlineBar[];
   quote: Quote | null;
+  money: MoneyView | null;
   valuation: ValuationView | null;
   chips: ChipsView | null;
   holders: HoldersView | null;
@@ -157,6 +184,8 @@ export interface AnalyzeOpts {
 const MAX_AGE = {
   /** 盘中最后一根日 K 还在变 */
   kline: 5 * 60_000,
+  /** 资金流是日级序列,但盘中净流入一直在变 */
+  money: 5 * 60_000,
   /** 估值序列按交易日更新 */
   valuation: 2 * 3600_000,
   /** 筹码窗口按交易日更新 */
@@ -172,6 +201,14 @@ const MIN_PERCENTILE_POINTS = 60;
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+/** 原始响应里的数字常是字符串("1573592085.3100")——只有 digit 型字符串才转,别把 "" 当 0 */
+const numLoose = (v: unknown): number | null => {
+  const n = num(v);
+  if (n !== null) return n;
+  if (typeof v !== "string" || !/^-?\d+(?:\.\d+)?$/.test(v.trim())) return null;
+  const p = Number(v);
+  return Number.isFinite(p) ? p : null;
+};
 
 type Env = Record<string, unknown>;
 interface Ev { id?: unknown; field?: unknown; value?: unknown; unit?: unknown; period?: unknown; as_of?: unknown; record_key?: unknown; note?: unknown; raw_ref?: unknown }
@@ -214,12 +251,21 @@ async function fetchOne(
   }
 }
 
-/** 取数器落盘的全表行(信封里只有最后一条的字段,序列要读 raw/extracted_) */
+/**
+ * 取数器落盘的全表行(信封里只有最后一条的字段,序列要读落盘的原始文件)。
+ * 🔴 两种落盘格式都要认:估值/筹码是 `raw/extracted_*.json`(`{rows:[...]}`),
+ *    新浪资金流没有 extracted,直接是原始响应(顶层就是 `[...]`)。**只认 extracted 会静默返回空**,
+ *    于是「序列明明取到了」却算出空分位 —— 正是 silent-data-traps 里那一类。
+ */
 function rawRows(ctx: ServiceContext, f: Fetched): Record<string, unknown>[] {
-  const ref = evsOf(f.env).map((e) => str(e.raw_ref)).find((x) => x.startsWith("raw/extracted_"));
+  const refs = evsOf(f.env).map((e) => str(e.raw_ref)).filter((x) => x.startsWith("raw/"));
+  // extracted 优先(长表已规整),没有就退回原始响应
+  const ref = refs.find((x) => x.startsWith("raw/extracted_")) ?? refs[0];
   if (!ref) return [];
-  const doc = readRawDoc(ctx, f.outDir, ref) as { rows?: unknown } | null;
-  return Array.isArray(doc?.rows) ? (doc!.rows as Record<string, unknown>[]) : [];
+  const doc = readRawDoc(ctx, f.outDir, ref);
+  if (Array.isArray(doc)) return doc as Record<string, unknown>[];
+  const rows = (doc as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
 /** 长表里最新的一行(按这一行各字段里最晚的 period 排) */
@@ -294,6 +340,58 @@ async function quoteOf(ctx: ServiceContext, symbol: string, refresh: boolean, p:
     open: num(q.open?.value) ?? close,
     market_cap: num(q.market_cap?.value),
     pe: num(q.pe_ttm?.value),
+  };
+}
+
+/**
+ * 资金流:日级主力净流入序列 → 1/5/10/20 日累计 + 连续同号天数。
+ * 🔴 序列是原始响应里的 `netamount`(元)与 `r0_net`(超大单),都是**字符串**,要 numLoose。
+ * 🔴 方向只用「5 日与 20 日是否同向」来定:单日净流入是噪声,拿来当结论就是给噪声镀金。
+ */
+async function moneyOf(ctx: ServiceContext, symbol: string, refresh: boolean, p: Probe): Promise<MoneyView | null> {
+  const f = await fetchOne(ctx, "sina_fund_flow", symbol, undefined, refresh, MAX_AGE.money, p, "资金流");
+  if (!f) return null;
+  const pts = rawRows(ctx, f)
+    .map((r) => ({ date: str(r.opendate).slice(0, 10), net: numLoose(r.netamount), big: numLoose(r.r0_net) }))
+    .filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.date) && x.net !== null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!pts.length) {
+    p.gaps.push("资金流一行可用数据都没读到");
+    return null;
+  }
+  const tail = (n: number) => (pts.length >= n ? pts.slice(-n) : null);
+  const sumOf = (xs: { net: number | null }[] | null) => (xs ? xs.reduce((a, b) => a + (b.net ?? 0), 0) : null);
+  const net5 = sumOf(tail(5));
+  const net20 = sumOf(tail(20));
+  const last = pts[pts.length - 1]!.net!;
+
+  // 连续同号:正数 = 连续净流入天数,负数 = 连续净流出天数
+  const sign = Math.sign(last);
+  let streak = 0;
+  if (sign !== 0) {
+    for (let i = pts.length - 1; i >= 0 && Math.sign(pts[i]!.net!) === sign; i--) streak += sign;
+  }
+
+  const bigTail = tail(5);
+  const big5 = bigTail && bigTail.every((x) => x.big !== null)
+    ? bigTail.reduce((a, b) => a + (b.big ?? 0), 0) : null;
+
+  return {
+    as_of: pts[pts.length - 1]!.date,
+    window: { from: pts[0]!.date, to: pts[pts.length - 1]!.date, n: pts.length },
+    net_1d: last,
+    net_5d: net5,
+    net_10d: sumOf(tail(10)),
+    net_20d: net20,
+    big_order_5d: big5,
+    streak,
+    trend: net5 === null || net20 === null ? "样本不足"
+      : net5 > 0 && net20 > 0 ? "净流入"
+        : net5 < 0 && net20 < 0 ? "净流出"
+          : "分歧",
+    note: `新浪 MoneyFlow 的 netamount:主力(大单 + 特大单)净流入,${pts.length} 个交易日逐日累加。`
+      + "各平台的「主力」定义不同(有的含中单、有的只算特大单),换口径不能直接比;"
+      + "只给绝对额,不给「占成交额多少」—— 上游那个比率与本端点的成交额对不上,口径没吃透的比率不上屏。",
   };
 }
 
@@ -545,6 +643,61 @@ function insufficientStage(why: string): MainCapitalStage {
   };
 }
 
+/** 元 → 「12.3 亿」/「-8400 万」,给人看的口径 */
+function yi(v: number | null): string {
+  if (v === null) return "—";
+  const a = Math.abs(v);
+  const sign = v < 0 ? "-" : "+";
+  return a >= 1e8 ? `${sign}${(a / 1e8).toFixed(2)} 亿` : `${sign}${(a / 1e4).toFixed(0)} 万`;
+}
+
+/**
+ * 量价形态 × 资金方向的一致性校验。
+ *
+ * 🔴 这一层存在的理由:量价规则只能看到「价在涨、量在缩」,看不到钱是流出去还是流进来。
+ *    一个「缩量整理像洗盘」的形态,底下可能是主力连续 6 天净流出 —— 那时候说「洗盘」就是猜。
+ * 🔴 打架时**不下判断**:两套证据相反 → 阶段退成「观望」,并在 advice 第一句写明矛盾。
+ *    保留一个顺眼的结论、把矛盾挂在小字里,等于用排版骗人。
+ * 🔴 资金只作旁证,不接管评分:60 天的日级序列能说明方向,不足以单独定价。
+ * (导出是为了单测:这是纯函数,输入输出就能说清对错。)
+ */
+export function reconcileStage(mc: MainCapitalStage, money: MoneyView | null): MainCapitalStage {
+  if (!money || money.trend === "样本不足") {
+    return { ...mc, factors: [...mc.factors, "资金流没取到或样本不足,这个阶段只由量价推出"] };
+  }
+  const line = `主力资金:近 5 日 ${yi(money.net_5d)}、近 20 日 ${yi(money.net_20d)}`
+    + `(连续 ${Math.abs(money.streak)} 日${money.streak >= 0 ? "净流入" : "净流出"})`;
+  const bullish = mc.stage === "吸筹" || mc.stage === "主升";
+  const bearish = mc.stage === "出货";
+
+  if ((bullish && money.trend === "净流出") || (bearish && money.trend === "净流入")) {
+    return {
+      ...mc,
+      stage: "观望", confidence: "低",
+      advice: "量价形态与主力资金方向相反,这里不给方向;等两边一致了再看",
+      factors: [line, `量价像${mc.stage},资金却是${money.trend} —— 两套证据打架,降级为观望`, ...mc.factors],
+    };
+  }
+  if (money.trend === "分歧") {
+    return {
+      ...mc,
+      confidence: "低",
+      advice: `${mc.advice}(资金近 5 日与近 20 日方向不一致,信号强度打折)`,
+      factors: [line, "资金短中期方向分歧", ...mc.factors],
+    };
+  }
+  // 「观望」本身没有方向:资金再怎么同向,也不能替它造一个方向出来
+  if (mc.stage === "观望") {
+    return { ...mc, factors: [line, `资金${money.trend},但量价没给出形态,不足以据此定阶段`, ...mc.factors] };
+  }
+  // 同向:阶段留着;「吸筹」原本低置信,现在多了一个独立证据,可以升一档(只升这一档)
+  return {
+    ...mc,
+    confidence: mc.stage === "吸筹" && mc.confidence === "低" ? "中" : mc.confidence,
+    factors: [line, `量价与资金同向(${money.trend})`, ...mc.factors],
+  };
+}
+
 // ─── 主入口 ────────────────────────────────────────────────
 
 export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: AnalyzeOpts = {}): Promise<StockAnalysisResult> {
@@ -553,9 +706,10 @@ export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: An
   const depth: "basic" | "full" = opts.depth === "full" ? "full" : "basic";
   const p = newProbe();
 
-  const [bars, quote, valuation, chips, holders] = await Promise.all([
+  const [bars, quote, money, valuation, chips, holders] = await Promise.all([
     klineOf(ctx, code, refresh, p),
     quoteOf(ctx, code, refresh, p),
+    moneyOf(ctx, code, refresh, p),
     valuationOf(ctx, code, refresh, p),
     chipsOf(ctx, code, refresh, p),
     holdersOf(ctx, code, refresh, depth, p),
@@ -578,9 +732,9 @@ export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: An
 
   // 样本不够就不给阶段:结论不能比数据走得远
   const mc = sufficient
-    ? mainCapital(trend.score, volume.score, position.score, {
+    ? reconcileStage(mainCapital(trend.score, volume.score, position.score, {
       ratio, pct: quote?.pct_change ?? 0, ret20, turnover: quote?.turnover ?? 0,
-    })
+    }), money)
     : insufficientStage(`日 K 只有 ${bars.length} 根(要 ≥61)、行情${quote ? "有" : "没取到"}`);
 
   const technicalScore = Math.round(trend.score * 0.4 + volume.score * 0.35 + position.score * 0.25);
@@ -599,6 +753,7 @@ export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: An
     },
     kline_data: bars.slice(-60),
     quote,
+    money,
     valuation,
     chips,
     holders,

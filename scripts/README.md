@@ -22,6 +22,6 @@
 - `scripts\\start.cmd`:同时启动本机 API 与浏览器 UI；任一进程异常退出会立即报错，按 Ctrl+C 或 UI 进程退出时会用 `taskkill /T` 收掉两棵子进程树。
   端口规则同 `scripts/start`;固定端口用 `scripts\\start.cmd -Port 6940 -ApiPort 9770`。
   `powershell.exe` 不在 PATH 时自动回退到 `%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;失败会 `pause` 住窗口,不让错误一闪而过。
-  - 个股页的「个股分析」(主力行为阶段 + 技术面三维评分 + 估值分位 + 筹码分布 + 股东与事件)由 Vibe-AStock 自己的规则引擎在本地计算(日 K / 腾讯批量行情 / baostock 估值与筹码 / 东财股东与事件六个端点),不再依赖任何外部服务,启动无需拉起别的进程。质押、解禁、大宗、增减持各自 4~10 秒,默认不取,点卡片右上角「取更全」才现取。
+  - 个股页的「个股分析」(主力行为阶段 + 技术面三维评分 + 资金流向 + 估值分位 + 筹码分布 + 股东与事件)由 Vibe-AStock 自己的规则引擎在本地计算(日 K / 腾讯批量行情 / 新浪日级资金流 / baostock 估值与筹码 / 东财股东与事件),不再依赖任何外部服务,启动无需拉起别的进程。质押、解禁、大宗、增减持各自 4~10 秒,默认不取,点卡片右上角「取更全」才现取。
 - `scripts\\init.ps1` / `scripts\\doctor.ps1`:PowerShell 版的同名入口，不依赖 WSL、Git Bash 或 `/bin/sh`。
 - `api.token` 会断开 NTFS ACL 继承，只授权当前 Windows 用户 SID；doctor 会读取真实 ACL，不用 Unix mode 假判。

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import "../src/finance/register.ts";
 import { detectPython } from "../src/init.ts";
-import { analyzeStock } from "../src/finance/stock_analysis.ts";
+import { analyzeStock, reconcileStage, type MoneyView } from "../src/finance/stock_analysis.ts";
 import type { ServiceContext } from "../src/service.ts";
 
 /**
@@ -39,6 +39,11 @@ series=spec.get('series')
 if series is not None:
   ref='raw/extracted_%s.json'%ep
   json.dump({'rows':series},open(os.path.join(out,ref),'w',encoding='utf-8'))
+# 原始响应就是顶层数组的那种(新浪资金流):不规整成 rows,数字还是字符串
+rawarr=spec.get('raw_array')
+if rawarr is not None:
+  ref='raw/%s_raw.json'%ep
+  json.dump(rawarr,open(os.path.join(out,ref),'w',encoding='utf-8'))
 for e in spec.get('evidence',[]):
   row=dict(e)
   if ref: row['raw_ref']=ref
@@ -82,9 +87,30 @@ const VAL_SERIES = [
 ];
 
 const chipNote = "窗口 168 个交易日,累计换手 53.0%,前复权,decay=1.0;三角分布 + 换手衰减模型(非交易所数据)";
+
+/**
+ * 60 天日级主力净流入(新→旧倒着看):
+ * 最近 3 天各 +1 亿,再往前 17 天各 -1000 万,更早 40 天各 +5000 万。
+ * ⇒ 5 日 +2.8 亿 / 20 日 +1.3 亿(同向为正)、连续 3 日净流入、超大单 5 日 +2.3 亿。
+ * 🔴 值故意用**字符串**(新浪源就是字符串),numLoose 没写对这条就会全变 null。
+ */
+const moneyRow = (i: number) => {
+  const net = i >= 57 ? 1e8 : i >= 40 ? -1e7 : 5e7;
+  const r0 = i >= 57 ? 8e7 : i >= 40 ? -5e6 : 4e7;
+  return { opendate: iso(i), netamount: net.toFixed(4), r0_net: r0.toFixed(4), trade: "10.0000", turnover: "1.0" };
+};
+const MONEY = Array.from({ length: 60 }, (_, i) => moneyRow(i));
+
 const BASE = (): Cfg => ({
   endpoints: {
     tx_kline: { series: BARS, evidence: [{ id: "ev-k1", field: "kline_points", value: BARS.length, period: iso(119) }] },
+    sina_fund_flow: {
+      raw_array: MONEY,
+      evidence: [
+        { id: "ev-m1", field: "fund_net_inflow_daily_latest", value: 1e8, unit: "元", period: iso(59) },
+        { id: "ev-m2", field: "fund_net_inflow_daily_points", value: MONEY.length, unit: "条", period: `${iso(0)}..${iso(59)}` },
+      ],
+    },
     tx_quotes_batch: {
       evidence: [
         { id: "ev-q1", field: "security_name", value: "测试股", unit: "text", period: iso(119), record_key: "sh600519" },
@@ -157,7 +183,7 @@ test("刷新真的刷新:不传 refresh 命中快照不重取,传了就全部重
     ctx.setCfg(BASE());
     const first = await analyzeStock(ctx, "600519");
     const n1 = ctx.count();
-    assert.equal(n1, 5, "basic 层取 5 个端点(日K/行情/估值/筹码/户数)");
+    assert.equal(n1, 6, "basic 层取 6 个端点(日K/行情/资金流/估值/筹码/户数)");
     assert.equal(first.from_cache, false);
 
     const second = await analyzeStock(ctx, "600519");
@@ -238,13 +264,13 @@ test("basic 层不去碰慢端点;full 层才取质押/解禁/大宗/增减持",
     ctx.setCfg({ endpoints: { ...BASE().endpoints, ...EVENTS } });
     const basic = await analyzeStock(ctx, "600519");
     assert.equal(basic.depth, "basic");
-    assert.equal(ctx.count(), 5, "basic 只有 5 个端点");
+    assert.equal(ctx.count(), 6, "basic 只有 6 个端点");
     assert.equal(basic.holders!.pledge_ratio, null);
     assert.equal(basic.holders!.shareholder_count, 278364);
 
     const full = await analyzeStock(ctx, "600519", { depth: "full", refresh: true });
     assert.equal(full.depth, "full");
-    assert.equal(ctx.count(), 5 + 4 + 5, "full 再多取 4 个端点(另计那次 basic 的 5 次)");
+    assert.equal(ctx.count(), 6 + 4 + 6, "full 再多取 4 个端点(另计那次 basic 的 6 次)");
     const h = full.holders!;
     assert.equal(h.pledge_ratio, 0.07, "取最新一期质押比例");
     assert.equal(h.pledge_as_of, "2026-10-30");
@@ -255,4 +281,89 @@ test("basic 层不去碰慢端点;full 层才取质押/解禁/大宗/增减持",
     assert.equal(h.holder_trade_latest!.direction, "增持");
     assert.equal(h.holder_trade_latest!.date, "2025-12-30");
   } finally { ctx.cleanup(); }
+});
+
+test("资金流:从原始数组算 5/20 日累计与连续天数(数字是字符串,不能当 0)", async () => {
+  const ctx = fakeCtx();
+  try {
+    ctx.setCfg(BASE());
+    const m = (await analyzeStock(ctx, "600519")).money!;
+    assert.ok(m, "资金流是 basic 层的主证据,不该为 null");
+    assert.equal(m.window.n, 60);
+    assert.equal(m.as_of, iso(59));
+    assert.equal(m.net_1d, 1e8);
+    assert.equal(m.net_5d, 2.8e8, "3×1 亿 + 2×(-1000 万)");
+    assert.equal(m.net_20d, 1.3e8, "3×1 亿 + 17×(-1000 万)");
+    assert.equal(m.big_order_5d, 2.3e8, "超大单 5 日:3×8000 万 - 2×500 万");
+    assert.equal(m.streak, 3, "第 4 天是净流出,连续链断在这里");
+    assert.equal(m.trend, "净流入");
+    assert.match(m.note, /netamount/, "口径要跟着数一起走");
+  } finally { ctx.cleanup(); }
+});
+
+test("资金流取不到:写缺口、返回 null,阶段退回只看量价(并且明说)", async () => {
+  const ctx = fakeCtx();
+  try {
+    const cfg = BASE();
+    cfg.endpoints.sina_fund_flow = { failed: "新浪超时" };
+    ctx.setCfg(cfg);
+    const r = await analyzeStock(ctx, "600519");
+    assert.equal(r.money, null);
+    assert.ok(r.gaps.some((g) => /资金流没取到\(新浪超时\)/.test(g)), r.gaps.join(" / "));
+    // 少了一个域不能把整份判成无效;但阶段里要交代它是怎么来的
+    assert.equal(r.sufficient, true);
+    assert.notEqual(r.composite, null);
+    assert.ok(r.main_capital.factors.some((f) => /只由量价推出/.test(f)), r.main_capital.factors.join(" / "));
+  } finally { ctx.cleanup(); }
+});
+
+test("资金与量价打架:退成「观望」并把矛盾写在第一行(不挑顺眼的留下)", () => {
+  const base = {
+    score: 70, confidence: "中", advice: "趋势与量能配合,持有为主", factors: ["近一日放量"],
+  };
+  const money = (over: Partial<MoneyView>): MoneyView => ({
+    as_of: "2026-10-30", window: { from: "2026-08-01", to: "2026-10-30", n: 60 },
+    net_1d: null, net_5d: null, net_10d: null, net_20d: null, big_order_5d: null,
+    streak: -6, trend: "净流出", note: "口径", ...over,
+  });
+
+  // 主升 / 吸筹(偏多)遇上持续净流出 ⇒ 不给方向
+  for (const stage of ["主升", "吸筹"] as const) {
+    const mc = reconcileStage({ ...base, stage }, money({ net_5d: -3e8, net_20d: -9e8 }));
+    assert.equal(mc.stage, "观望", `${stage} 与资金流出相反,不能留着`);
+    assert.equal(mc.confidence, "低");
+    assert.match(mc.advice, /相反/);
+    assert.match(mc.factors[0]!, /近 5 日 -3\.00 亿/);
+    assert.ok(mc.factors.some((f) => /量价像主升|量价像吸筹/.test(f)), mc.factors.join(" / "));
+  }
+  // 出货(偏空)遇上持续净流入 ⇒ 同样不给方向
+  const hold = reconcileStage({ ...base, stage: "出货" }, money({ trend: "净流入", streak: 6, net_5d: 3e8, net_20d: 9e8 }));
+  assert.equal(hold.stage, "观望");
+  assert.match(hold.advice, /相反/);
+});
+
+test("资金同向:只把「吸筹」的置信度升一档;观望不会被资金造出方向", () => {
+  const money: MoneyView = {
+    as_of: "2026-10-30", window: { from: "2026-08-01", to: "2026-10-30", n: 60 },
+    net_1d: 1e8, net_5d: 3e8, net_10d: 5e8, net_20d: 9e8, big_order_5d: 2e8,
+    streak: 4, trend: "净流入", note: "口径",
+  };
+  const acc = reconcileStage({ score: 50, stage: "吸筹", confidence: "低", advice: "低位缩量", factors: [] }, money);
+  assert.equal(acc.stage, "吸筹");
+  assert.equal(acc.confidence, "中", "多了一个独立证据,低可以升到中");
+  assert.match(acc.factors[0]!, /近 5 日 \+3\.00 亿/);
+
+  const hold = reconcileStage({ score: 50, stage: "观望", confidence: "低", advice: "信号不明确", factors: [] }, money);
+  assert.equal(hold.stage, "观望", "资金有方向也不能替「观望」编一个形态");
+  assert.equal(hold.confidence, "低");
+  assert.ok(hold.factors.some((f) => /不足以据此定阶段/.test(f)));
+
+  // 短中期分歧:阶段留着,但强度打折
+  const split = reconcileStage(
+    { score: 70, stage: "主升", confidence: "中", advice: "持有为主", factors: [] },
+    { ...money, net_5d: 3e8, net_20d: -9e8, trend: "分歧" },
+  );
+  assert.equal(split.stage, "主升");
+  assert.equal(split.confidence, "低");
+  assert.match(split.advice, /强度打折/);
 });

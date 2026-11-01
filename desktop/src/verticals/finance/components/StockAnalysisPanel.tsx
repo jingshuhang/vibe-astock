@@ -41,6 +41,14 @@ const pct = (v: number | null, d = 1): string => (v === null ? "—" : `${v.toFi
 const frac = (v: number | null, d = 1): string => (v === null ? "—" : `${(v * 100).toFixed(d)}%`);
 const price = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
 const cnNum = (v: number | null): string => (v === null ? "—" : v.toLocaleString("zh-CN"));
+/** 元 → 「+12.36 亿」/「-8400 万」;空值给「—」,不写成 0 */
+function yi(v: number | null): string {
+  if (v === null) return "—";
+  const a = Math.abs(v);
+  return `${v < 0 ? "-" : "+"}${a >= 1e8 ? `${(a / 1e8).toFixed(2)} 亿` : `${(a / 1e4).toFixed(0)} 万`}`;
+}
+/** A 股习惯:净流入红、净流出绿(和涨跌幅一致) */
+const flowTone = (v: number | null): string => (v === null ? "" : v >= 0 ? "text-danger" : "text-success");
 
 // ─── 小组件 ────────────────────────────────────────────────
 
@@ -82,6 +90,21 @@ function StageBadge({ stage, confidence }: { stage: string; confidence: string }
       <span className="font-medium">{s.label}</span>
       {stage !== "数据不足" && confidence !== "高" && <span className="text-[10px] opacity-70">· 置信{confidence}</span>}
     </div>
+  );
+}
+
+/** 资金面方向徽章:同向才算有方向,两个窗口打架就叫分歧 */
+function FlowBadge({ trend }: { trend: string }) {
+  const m: Record<string, string> = {
+    "净流入": "bg-danger/15 text-danger border-danger/30",
+    "净流出": "bg-success/15 text-success border-success/30",
+    "分歧": "bg-muted text-muted-foreground border-border",
+    "样本不足": "bg-muted text-muted-foreground border-border",
+  };
+  return (
+    <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-medium", m[trend] ?? m["分歧"])}>
+      {trend}
+    </span>
   );
 }
 
@@ -207,10 +230,10 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
               ))}
             </div>
           )}
-          {data.main_capital.stage !== "数据不足" && (
+          {data.main_capital.stage !== "数据不足" && data.money === null && (
             <Note>
-              判定依据只有量价与位置（日 K + 行情），没有资金流数据 —— 多日资金流端点当前不可用，
-              所以这里的「主力」是量价代理，不是真有资金流向的证据。
+              判定依据只有量价与位置（日 K + 行情），这次没取到资金流 —— 所以这里的「主力」是量价代理，
+              不是真有资金流向的证据。
             </Note>
           )}
         </div>
@@ -227,6 +250,30 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
           </div>
         </div>
       )}
+
+      {/* 资金流向:这是真的钱,不是量价代理 */}
+      <Block title="资金流向" sub={data.money ? `截至 ${data.money.as_of} · ${data.money.window.n} 个交易日` : undefined}>
+        {data.money ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-muted-foreground">主力净流入(大单 + 特大单)</span>
+              <FlowBadge trend={data.money.trend} />
+            </div>
+            <KV label="今日" value={yi(data.money.net_1d)} tone={flowTone(data.money.net_1d)} />
+            <KV label="近 5 日" value={yi(data.money.net_5d)} tone={flowTone(data.money.net_5d)} />
+            <KV label="近 20 日" value={yi(data.money.net_20d)} tone={flowTone(data.money.net_20d)} />
+            <KV label="连续"
+              value={data.money.streak === 0 ? "—" : `${Math.abs(data.money.streak)} 日${data.money.streak > 0 ? "净流入" : "净流出"}`}
+              tone={data.money.streak === 0 ? "" : flowTone(data.money.streak)} />
+            {data.money.big_order_5d !== null && (
+              <KV label="超大单 5 日" value={yi(data.money.big_order_5d)} tone={flowTone(data.money.big_order_5d)} />
+            )}
+            <Note>{data.money.note}</Note>
+          </>
+        ) : (
+          <p className="text-[11px] leading-4 text-muted-foreground">没取到资金流序列,这一栏空着（不当成 0）</p>
+        )}
+      </Block>
 
       {/* 估值 + 筹码 */}
       <div className="grid gap-3 md:grid-cols-2">

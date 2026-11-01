@@ -32,6 +32,13 @@ const full = (over: Partial<StockAnalysisResult> = {}): StockAnalysisResult => (
     symbol: "600519", name: "贵州茅台", close: 1432.5, prev_close: 1400, pct_change: 2.32,
     turnover: 0.85, high: 1440, low: 1398, open: 1402, market_cap: 1.8e12, pe: 21.5,
   },
+  money: {
+    as_of: "2026-10-30",
+    window: { from: "2026-07-31", to: "2026-10-30", n: 60 },
+    net_1d: 1573592085.31, net_5d: 1.236e9, net_10d: 2.05e9, net_20d: 8.8e8,
+    big_order_5d: 9.82e8, streak: 3, trend: "净流入",
+    note: "新浪 MoneyFlow 的 netamount:主力(大单 + 特大单)净流入,60 个交易日逐日累加。",
+  },
   valuation: {
     as_of: "2026-10-30",
     window: { from: "2021-11-01", to: "2026-10-30", n: 1210 },
@@ -73,6 +80,7 @@ const thin = (): StockAnalysisResult => full({
   },
   technical: { trend_score: 50, volume_score: 50, position_score: 50, factors: ["均量不足 21 根,未参与评分"] },
   quote: null,
+  money: null,
   valuation: null,
   chips: null,
   holders: null,
@@ -102,6 +110,7 @@ test("字段对齐:前端读的每个字段后端都真的发(少一个就是永
     ["StockAnalysisResult", "StockAnalysisResult"],
     ["StockMainCapital", "MainCapitalStage"],
     ["StockTechnical", "TechnicalFactors"],
+    ["StockMoney", "MoneyView"],
     ["StockValuation", "ValuationView"],
     ["StockChips", "ChipsView"],
     ["StockHolders", "HoldersView"],
@@ -123,9 +132,26 @@ test("数据齐全:现价、评分、分位、筹码口径、股东户数都在�
   assert.match(t, /股东户数 278,364/);
   assert.match(t, /增持 0\.10%/);
   assert.doesNotMatch(t, /不下判断/);
-  // 「主力行为」四个字容易被读成有资金流证据,必须明说它只是量价代理
-  assert.match(t, /没有资金流数据/);
-  assert.match(t, /是量价代理/);
+});
+
+test("资金流向:真金白银的证据上屏,5/20 日与连续天数都在;有钱就不再说「只有量价」", async () => {
+  const t = await render(full());
+  assert.match(t, /资金流向/);
+  assert.match(t, /净流入/);
+  assert.match(t, /\+15\.74 亿/, "今日净流入");
+  assert.match(t, /\+12\.36 亿/, "近 5 日累计");
+  assert.match(t, /\+8\.80 亿/, "近 20 日累计");
+  assert.match(t, /3 日净流入/, "连续天数");
+  assert.match(t, /\+9\.82 亿/, "超大单 5 日");
+  assert.match(t, /netamount/, "口径跟着数一起走");
+  assert.doesNotMatch(t, /没有资金流数据/, "这次钱是取到了的,不能还挂着「只有量价」");
+});
+
+test("资金流没取到:这栏明说空着,并交代主力行为只剩量价代理", async () => {
+  const t = await render(full({ money: null }));
+  assert.match(t, /没取到资金流序列/);
+  assert.doesNotMatch(t, /\+15\.74 亿/);
+  assert.match(t, /量价代理/, "没资金证据时必须说清「主力」是代理词");
 });
 
 test("样本不足:说「不下判断」,不画 0 分、也不借「洗盘中」的漂亮话", async () => {

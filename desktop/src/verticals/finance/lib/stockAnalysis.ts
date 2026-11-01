@@ -50,7 +50,29 @@ export interface StockMainCapital {
   factors: string[];
 }
 
-/** 估值位置:贵不贵只能靠分位回答,现值本身没有参照物 */
+/**
+ * 资金流向:真金白银的证据,不是量价代理(后端见 sina_fund_flow 的日级 netamount)。
+ * 🔴 只给绝对额,不给「占成交额多少」:上游那个比率与本端点的成交额对不上,口径没吃透的比率不上屏。
+ * 🔴 `trend` 只由「5 日与 20 日是否同向」定 —— 单日净流入是噪声,不是结论。
+ */
+export interface StockMoney {
+  as_of: string;
+  window: { from: string; to: string; n: number };
+  net_1d: number | null;
+  net_5d: number | null;
+  net_10d: number | null;
+  net_20d: number | null;
+  /** 超大单净流入 5 日累计(元) */
+  big_order_5d: number | null;
+  /** 连续同号天数:正 = 连续净流入,负 = 连续净流出 */
+  streak: number;
+  trend: "净流入" | "净流出" | "分歧" | "样本不足";
+  note: string;
+}
+
+/**
+ * 估值位置:贵不贵只能靠分位回答,现值本身没有参照物
+ */
 export interface StockValuation {
   as_of: string;
   window: { from: string; to: string; n: number };
@@ -107,6 +129,7 @@ export interface StockAnalysisResult {
   /** 日 K(近 60 根) */
   kline_data: StockAnalysisKlineBar[];
   quote: StockAnalysisQuote | null;
+  money: StockMoney | null;
   valuation: StockValuation | null;
   chips: StockChips | null;
   holders: StockHolders | null;
