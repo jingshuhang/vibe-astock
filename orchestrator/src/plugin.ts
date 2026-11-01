@@ -269,8 +269,10 @@ export interface Plugin {
    * 垂类自己的**单个代码的分析**(可选):`POST /analysis/stock` 转给它。
    * 原来 api.ts 直接 `import ... from "./finance/stock_analysis.ts"` —— Core 的 HTTP 层里
    * 出现垂类 import(core_purity 第 8 条)。ctx 由 Core 原样传入,垂类自己按需收窄。
+   * `opts.refresh` = 用户点了「刷新」,必须真取、不许读快照(Core 只透传,不认识具体端点)。
+   * `opts.depth` = 取数深度(`basic` / `full`),同样是透传:哪些端点算「深一层」由垂类自己定。
    */
-  readonly analyzeSymbol?: (ctx: unknown, symbol: string) => unknown | Promise<unknown>;
+  readonly analyzeSymbol?: (ctx: unknown, symbol: string, opts?: { refresh?: boolean; depth?: "basic" | "full" }) => unknown | Promise<unknown>;
   /**
    * 研究列表显示的主体名称从哪几份取数产物里找(按顺序,找到即停)。只用于列表展示,不当证据。
    * 不提供 = 列表不显示名称。原来这三份文件名写死在 Core 里(第四轮审计 A6)。

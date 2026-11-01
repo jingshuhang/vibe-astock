@@ -223,9 +223,9 @@ export const FINANCE_PLUGIN: Plugin = {
   // 🔴 必须惰性 import:stock_analysis.ts 反过来 import service.ts,而 service.ts 又经 register 拿插件 ——
   //    写成静态 import 就是循环初始化,注册表还没建好就读 FINANCE_PLUGIN(实测 ReferenceError:
   //    Cannot access 'FINANCE_PLUGIN' before initialization,page_fallback / plugin / readme_numbers 三个文件直接起不来)。
-  analyzeSymbol: async (ctx, symbol) => {
+  analyzeSymbol: async (ctx, symbol, opts) => {
     const { analyzeStock } = await import("./stock_analysis.ts");
-    return analyzeStock(ctx as ServiceContext, symbol);
+    return analyzeStock(ctx as ServiceContext, symbol, opts);
   },
   doctorChecks: ({ dataRoot }) => {
     const rows = thermoLedgerOverview({ dataRoot });

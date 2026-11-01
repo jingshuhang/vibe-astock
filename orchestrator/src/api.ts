@@ -431,13 +431,15 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       }
       // ---- 逐个代码的分析（本地规则引擎，不依赖任何外部服务） ----
       // 具体实现由垂类给(plugin.analyzeSymbol):Core 的 HTTP 层不再 import 垂类模块。
+      // 🔴 refresh 必须透传:没有它,页面上的「刷新」只是把同一个请求再发一遍,
+      //    命中的还是上次的快照(日 K 没有声明缓存上限时那份快照永不过期)。
       const analyze = currentPlugin().analyzeSymbol;
       if (analyze && req.method === "POST" && url.pathname === "/analysis/stock") {
         const b = await readBody(req);
         const symbol = String(b?.symbol ?? "");
         if (!symbol) return send(res, 400, { error: "missing_symbol" });
         try {
-          const result = await analyze(ctx, symbol);
+          const result = await analyze(ctx, symbol, analysisOpts(b));
           return send(res, 200, result);
         } catch (e) {
           return send(res, 500, { error: "analysis_failed", message: e instanceof Error ? e.message.slice(0, 200) : String(e) });
@@ -493,6 +495,17 @@ export function resolveToken(ctx: ServiceContext, env: NodeJS.ProcessEnv = proce
 /** 回环地址判定(绑定前置检查与 cookie 登录开关共用同一口径) */
 export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * `POST /analysis/stock` 的取数开关。
+ * 🔴 只认 `refresh` / `depth` 两个**白名单**字段,其余一律丢掉 —— 免得上层随手塞个参数就绕过缓存纪律。
+ * 🔴 `refresh` 必须严格按 `=== true` 判:字符串 `"true"` / `1` 都不算。
+ *    这一层曾经把 refresh 整个漏掉,页面上的「刷新」就变成把同一份快照再取一遍。
+ */
+export function analysisOpts(body: unknown): { refresh: boolean; depth: "basic" | "full" } {
+  const o = (body ?? {}) as Record<string, unknown>;
+  return { refresh: o.refresh === true, depth: o.depth === "full" ? "full" : "basic" };
 }
 
 /**

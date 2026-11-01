@@ -28,6 +28,7 @@ import type { AbnormalResult } from "./abnormal.ts";
 import type { ReviewTiersResult } from "./reviewTiers.ts";
 import type { EarningsBriefResult } from "./earningsBrief.ts";
 import type { ShareCardResult } from "./shareCard.ts";
+import type { StockAnalysisOpts, StockAnalysisResult } from "./stockAnalysis.ts";
 import type { VerdictResult } from "./verdicts.ts";
 import type { AuditReport, HeadCheck } from "./auditView.ts";
 import type { RunCompareResult } from "./runCompareView.ts";
@@ -476,16 +477,16 @@ export const backend = {
   /** 持仓写动作:migrate = 旧持有记录转成期初流水;adopt / discard = 用户处理冲突的那条。都先备份 */
   holdingsAct: (body: { action: "migrate" | "adopt" | "discard"; id?: string; method: CostMethod }) =>
     call<{ result: MigrationResult; view: HoldingsView }>("/view/holdings", { method: "POST", body: JSON.stringify(body) }),
-  /** 个股分析（本地规则引擎）：主力行为（吸筹/洗盘/出货）+ 技术面评分 + 综合分数 */
-  stockAnalysis: (symbol: string, signal?: AbortSignal) =>
-    call<{
-      symbol: string; name: string; composite: number;
-      main_capital: { score: number; stage: string; confidence: string; advice: string; factors: string[] };
-      technical: { score: number; trend_score: number; volume_score: number; position_score: number; factors: string[] };
-      gaps?: string[]; sufficient?: boolean;
-    }>(
+  /**
+   * 个股分析（本地规则引擎）：主力行为 + 技术面评分 + 估值分位 + 筹码 + 股东与事件。
+   * 🔴 `opts.refresh` 必须真传：不传的时候后端读的还是上次落盘的快照（日 K 曾经因此读到四天前的数据），
+   *    页面上的「刷新」就变成一个把同一份数据再拿一遍的按钮。
+   * 🔴 `opts.depth = "full"` 才取质押 / 解禁 / 大宗 / 增减持（各自 4~10 秒），默认 basic。
+   */
+  stockAnalysis: (symbol: string, opts: StockAnalysisOpts = {}, signal?: AbortSignal) =>
+    call<StockAnalysisResult>(
       "/analysis/stock",
-      { method: "POST", body: JSON.stringify({ symbol }), signal },
+      { method: "POST", body: JSON.stringify({ symbol, ...opts }), signal },
     ),
   /** 从表格导入前预览(不写):每行数据对不对、是否和已记的一样、按勾选写进去后会不会算不了 */
   holdingsImportPreview: (rows: Record<string, unknown>[], selected?: boolean[], signal?: AbortSignal) =>

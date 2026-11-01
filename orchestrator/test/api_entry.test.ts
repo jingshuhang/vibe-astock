@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isEntryPath, parsePortArg } from "../src/api.ts";
+import { analysisOpts, isEntryPath, parsePortArg } from "../src/api.ts";
 import { API_PORT } from "../src/brand.ts";
 import "../src/finance/register.ts";
 
@@ -27,4 +27,16 @@ test("入口判定同时识别源码与常见编译产物", () => {
   for (const p of ["/a/b/other.js", "/a/b/api.json", "/a/bapi.js", undefined]) {
     assert.ok(!isEntryPath(p), `不该认作入口：${p}`);
   }
+});
+
+test("个股分析的取数开关：refresh 严格为 true 才算，depth 只认 full", () => {
+  assert.deepEqual(analysisOpts({ refresh: true, depth: "full" }), { refresh: true, depth: "full" });
+  // 缺省 / 空体：走快照 + 基础层（默认不吃十几个端点）
+  assert.deepEqual(analysisOpts(undefined), { refresh: false, depth: "basic" });
+  assert.deepEqual(analysisOpts({}), { refresh: false, depth: "basic" });
+  // "true" / 1 都不算 —— 只认布尔 true，免得传参放水把缓存纪律绕过去
+  assert.deepEqual(analysisOpts({ refresh: "true" }), { refresh: false, depth: "basic" });
+  assert.deepEqual(analysisOpts({ refresh: 1 }), { refresh: false, depth: "basic" });
+  // 白名单之外的东西一律掉地上
+  assert.deepEqual(analysisOpts({ depth: "FULL", symbol: "600519", extra: 1 }), { refresh: false, depth: "basic" });
 });
