@@ -164,6 +164,7 @@ const EVENTS: Record<string, unknown> = {
       { id: "ev-b0", field: "block_trade_count", value: 20, unit: "笔", period: "2026-01-01..2026-10-30" },
       { id: "ev-b1", field: "block_trade_price", value: 1354, unit: "元", period: "2026-10-29", record_key: "2026-10-29|0|甲|乙" },
       { id: "ev-b2", field: "block_trade_premium_pct", value: -3.2, unit: "%", period: "2026-10-29", record_key: "2026-10-29|0|甲|乙" },
+      { id: "ev-b2a", field: "block_trade_amount", value: 18685200, unit: "元", period: "2026-10-29", record_key: "2026-10-29|0|甲|乙" },
       { id: "ev-b3", field: "block_trade_price", value: 1300, unit: "元", period: "2026-10-20", record_key: "2026-10-20|1|丙|丁" },
       { id: "ev-b4", field: "block_trade_premium_pct", value: 1.1, unit: "%", period: "2026-10-20", record_key: "2026-10-20|1|丙|丁" },
     ],
@@ -278,6 +279,7 @@ test("basic 层不去碰慢端点;full 层才取质押/解禁/大宗/增减持",
     assert.equal(h.block_trade_count, 20);
     assert.equal(h.block_trade_latest!.date, "2026-10-29");
     assert.equal(h.block_trade_latest!.premium_pct, -3.2);
+    assert.equal(h.block_trade_latest!.amount, 18685200, "金额按元(上游单位已核,不再是万字头)");
     assert.equal(h.holder_trade_latest!.direction, "增持");
     assert.equal(h.holder_trade_latest!.date, "2025-12-30");
   } finally { ctx.cleanup(); }

@@ -136,9 +136,9 @@ export interface HoldersView {
   /** 未来窗口内待解禁批次;0 与「没取到」是两件事,null 表示没取到 */
   lockup_upcoming: number | null;
   lockup_window: string | null;
-  /** 大宗交易笔数 / 最新一笔的折价率 */
+  /** 大宗交易笔数 / 最新一笔的折价率与金额(元) */
   block_trade_count: number | null;
-  block_trade_latest: { date: string; premium_pct: number | null } | null;
+  block_trade_latest: { date: string; premium_pct: number | null; amount: number | null } | null;
   /** 最近一条增减持 */
   holder_trade_latest: { date: string; direction: string; change_pct: number | null } | null;
 }
@@ -503,9 +503,9 @@ async function holdersOf(
     if (row) {
       out.block_trade_latest = {
         date: rowPeriod(row, "block_trade_price"),
-        // 🔴 只放折价率(无量纲),金额和成交量**不显示**:这两个字段的 unit 标成 万股/万元,
-        //    但数值是 股/元(用 price×volume 核对过,差 1e4)。标注错了就不该上屏,待修 mapper。
         premium_pct: rowNum(row, "block_trade_premium_pct"),
+        // 金额单位是**元**(上游已核对:DEAL_VOLUME 是股、DEAL_AMT 是元,不是万股/万元)
+        amount: rowNum(row, "block_trade_amount"),
       };
     }
   }

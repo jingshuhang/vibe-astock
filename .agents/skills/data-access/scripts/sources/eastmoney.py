@@ -350,7 +350,12 @@ def margin_trading(code: str, page_size: int = 30) -> list[dict]:
 
 
 def block_trade(code: str, page_size: int = 20) -> list[dict]:
-    """大宗交易:price 成交价(元) / close 收盘价(元) / premium_pct(%) / vol(万股,源口径) / amount(万元,源口径) / buyer / seller"""
+    """大宗交易:price 成交价(元) / close 收盘价(元) / premium_pct(%) / vol(股) / amount(元) / buyer / seller
+
+    🔴 DEAL_VOLUME / DEAL_AMT 是**股 / 元**,不是「万股 / 万元」—— 实测 600519 一笔:
+    vol=13800、amount=18685200、price=1354(1354×13800=18685200)。
+    若按万股理解,13800 万股 = 13.8 亿股 > 茅台总股本 12.56 亿股,不成立。
+    """
     digits, _ = norm_ticker(code, stock_only=True)
     data = eastmoney_datacenter("RPT_DATA_BLOCKTRADE", filter_str=f'(SECURITY_CODE="{digits}")', page_size=page_size, sort_columns="TRADE_DATE", sort_types="-1")
     rows = []

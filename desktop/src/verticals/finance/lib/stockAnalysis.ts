@@ -114,8 +114,8 @@ export interface StockHolders {
   lockup_upcoming: number | null;
   lockup_window: string | null;
   block_trade_count: number | null;
-  /** 只给折价率(无量纲):金额与成交量的 unit 在后端标错了,标注错了就不该上屏 */
-  block_trade_latest: { date: string; premium_pct: number | null } | null;
+  /** 最新一笔:溢价率(%)与金额(元)。单位按股/元(上游 mappers 的「万股/万元」标注差 1e4,已修正) */
+  block_trade_latest: { date: string; premium_pct: number | null; amount: number | null } | null;
   holder_trade_latest: { date: string; direction: string; change_pct: number | null } | null;
 }
 

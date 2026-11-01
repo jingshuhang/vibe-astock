@@ -337,13 +337,14 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
                   hint={data.holders.block_trade_latest
                     // 用中性的「溢价率」:负数是折价、正数是溢价、0 就是按收盘价成交,别一律写成「折价」
                     ? `${data.holders.block_trade_latest.date} 溢价率 ${pct(data.holders.block_trade_latest.premium_pct)}`
+                      + ` · 成交 ${yi(data.holders.block_trade_latest.amount)}`
                     : undefined} />
                 <KV label="最近增减持"
                   value={data.holders.holder_trade_latest
                     ? `${data.holders.holder_trade_latest.direction} ${pct(data.holders.holder_trade_latest.change_pct, 2)}`
                     : "—"}
                   hint={data.holders.holder_trade_latest?.date} />
-                <Note>大宗交易只给折价率:金额与成交量的单位在上游标注错了（差 1e4）,标注错的数不上屏。</Note>
+                <Note>大宗成交量按股、成交额按元(上游早期标成万股/万元,差 1e4,已修正并回归)。</Note>
               </>
             ) : (
               <Note>质押 / 解禁 / 大宗 / 增减持按需取（点右上角「取更全」）,各自 4~10 秒。</Note>

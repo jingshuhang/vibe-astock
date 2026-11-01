@@ -59,7 +59,7 @@ const full = (over: Partial<StockAnalysisResult> = {}): StockAnalysisResult => (
     as_of: "2026-09-30", shareholder_count: 278364, shareholder_count_change_pct: -6.09,
     pledge_ratio: 0.07, pledge_as_of: "2026-10-30",
     lockup_upcoming: 0, lockup_window: "2026-11-01..2027-01-30",
-    block_trade_count: 20, block_trade_latest: { date: "2026-10-29", premium_pct: -3.2 },
+    block_trade_count: 20, block_trade_latest: { date: "2026-10-29", premium_pct: -3.2, amount: 18685200 },
     holder_trade_latest: { date: "2025-12-30", direction: "增持", change_pct: 0.1 },
   },
   fetched_at: "2026-11-01T15:03:00+08:00",
@@ -199,6 +199,7 @@ test("full 层:0 批解禁是确切结论,和「没取到」显示成两个样�
   assert.match(ok, /质押比例 0\.07%/);
   assert.match(ok, /未来待解禁 0 批/);
   assert.match(ok, /溢价率 -3\.2%/, "折价只是负溢价,标签要用中性的「溢价率」");
+  assert.match(ok, /成交 \+1869 万/, "金额按元换算成人能读的单位");
 
   const missing = await render(full({
     holders: { ...full().holders!, lockup_upcoming: null, lockup_window: null },

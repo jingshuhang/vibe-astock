@@ -347,8 +347,8 @@ def em_block_trade(result: list, ctx: dict) -> dict:
     if not result:
         return out([ev(ctx, "block_trade_count", 0, "笔", today_str(), currency="n/a")], status="ok")
     rows = [{**r, "_i": i} for i, r in enumerate(result)]  # 同日同买卖方同价可多笔,record_key 必须带行号防 id 撞车
-    evs = rows_fields(ctx, rows, [("price", "block_trade_price", "元"), ("premium_pct", "block_trade_premium_pct", "%"), ("vol", "block_trade_volume", "万股"), ("amount", "block_trade_amount", "万元")],
-                      period_of=lambda r: r["date"], key_of=lambda r: f"{r['date']}|{r['_i']}|{r.get('buyer','')[:20]}|{r.get('seller','')[:20]}", note_of=lambda r: f"买方={r.get('buyer','')[:40]};卖方={r.get('seller','')[:40]};单位按东财数据中心口径")
+    evs = rows_fields(ctx, rows, [("price", "block_trade_price", "元"), ("premium_pct", "block_trade_premium_pct", "%"), ("vol", "block_trade_volume", "股"), ("amount", "block_trade_amount", "元")],
+                      period_of=lambda r: r["date"], key_of=lambda r: f"{r['date']}|{r['_i']}|{r.get('buyer','')[:20]}|{r.get('seller','')[:20]}", note_of=lambda r: f"买方={r.get('buyer','')[:40]};卖方={r.get('seller','')[:40]};成交量按股、成交额按元")
     evs.append(ev(ctx, "block_trade_count", len(result), "笔", f"{result[-1]['date']}..{result[0]['date']}", currency="n/a"))
     # 缺的字段逐笔记进 missing(审计第二轮 B4):只省略证据的话,有价格 / 笔数就被判成完整(ok)
     missing = []

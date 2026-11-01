@@ -511,3 +511,24 @@ def test_eastmoney_datacenter_business_failure_raises_not_empty(monkeypatch):
     monkeypatch.setattr(eastmoney, "em_json", lambda *a, **k: replies["empty"])
     zero = mappers.em_block_trade(eastmoney.block_trade("600519"), _ctx(market="CN", symbol="600519"))
     assert zero["evidence"][0]["field"] == "block_trade_count" and zero["evidence"][0]["value"] == 0, "明确无数据才是 0 笔"
+
+
+def test_block_trade_units_are_shares_and_yuan(monkeypatch):
+    """大宗交易的成交量按**股**、成交额按**元**,不是万股 / 万元。
+
+    实测 600519 一笔:DEAL_VOLUME=13800、DEAL_AMT=18685200、DEAL_PRICE=1354(1354×13800=18685200)。
+    按「万股」读就是 13.8 亿股,超过茅台总股本 12.56 亿股 —— 量纲只能是股。
+    以前 evidence 把单位标成万股 / 万元,差 1e4;拿这两个数做「金额 / 成交量」就全错。
+    """
+    from sources import eastmoney, mappers
+    monkeypatch.setattr(eastmoney, "eastmoney_datacenter", lambda *a, **k: [
+        {"TRADE_DATE": "2026-10-29 00:00:00", "CLOSE_PRICE": 1354, "DEAL_PRICE": 1354,
+         "DEAL_VOLUME": 13800, "DEAL_AMT": 18685200, "BUYER_NAME": "b", "SELLER_NAME": "s"}])
+    rows = eastmoney.block_trade("600519")
+    got = mappers.em_block_trade(rows, _ctx(market="CN", symbol="600519"))
+    units = {e["field"]: e.get("unit") for e in got["evidence"]}
+    assert units["block_trade_volume"] == "股"
+    assert units["block_trade_amount"] == "元"
+    # 自洽校验:金额 = 价 × 量(同量纲下必须成立)
+    vals = {e["field"]: e["value"] for e in got["evidence"]}
+    assert abs(vals["block_trade_amount"] - vals["block_trade_price"] * vals["block_trade_volume"]) < 1e-6
