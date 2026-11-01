@@ -126,8 +126,18 @@ def test_gate_words_and_trad_chars_match_orchestrator():
     marked = [ln[len(mark):] for ln in got.stdout.splitlines() if ln.startswith(mark)]
     # 恰好一行:0 行 = 什么都没打印出来(退出码却是 0),>1 行 = 打了两次,两种都不能当成功
     assert len(marked) == 1, f"预期恰好一行 gate 输出,实际 {len(marked)} 行;stdout={got.stdout[-500:]!r} stderr={got.stderr[-300:]!r}"
-    assert json.loads(marked[0]) == textsafe.GATE_WORDS, \
-        "textsafe.GATE_WORDS 必须与 finance/gate_rules.ts 求值后的 FINANCE_GATE.patterns 逐字一致"
+    core_patterns = json.loads(marked[0])
+    # 🔴 私人版有意分叉:Core 的产出红线已置空(gate_rules.ts 头注释:「经项目负责人决定,
+    #    投资顾问合规红线全部关闭」),而取数侧 GATE_WORDS 仍被 neutralize_actions 用来中和
+    #    **不可信外部文本**(搜索 / 公告原文里的「建仓」「目标价」),两件事不是一回事。
+    #    所以「Core 空、python 非空」是预期状态,不比对;但只要 Core 把词表填回去(要恢复对外合规),
+    #    两边就必须逐字一致 —— 那时漏同步 python 侧会在这里变红。
+    if core_patterns:
+        assert core_patterns == textsafe.GATE_WORDS, \
+            "Core 已恢复红线词表:textsafe.GATE_WORDS 必须与 finance/gate_rules.ts 求值后的 FINANCE_GATE.patterns 逐字一致"
+    else:
+        # 置空是置空,不是"表没了":python 侧的中和表不能跟着被清掉,否则外部文本里的动作词原样进 prompt
+        assert textsafe.GATE_WORDS, "Core 侧红线已置空,但取数侧的中和词表不该一起消失"
     assert "增持" not in textsafe.GATE_WORDS and "建议增持" in textsafe.GATE_WORDS
     gate = open(os.path.join(REPO, "orchestrator", "src", "gate.ts"), encoding="utf-8").read()
     m = re.search(r"TRAD_CHARS: Record<string, string> = \{([^}]+)\}", gate)
