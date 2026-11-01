@@ -107,6 +107,22 @@ test("函数插槽必须是函数;standardColumnsStage 必须是已声明的阶�
   rejects(plugin({ standardColumnsStage: "nosuchstage" }), /standardColumnsStage[\s\S]*不是已声明的阶段/);
 });
 
+test("analyzeSymbol 是可选的函数插槽,注册后必须活下来(POST /analysis/stock 靠它,丢了就静默 404)", () => {
+  // 🔴 这个槽位是 Core 与垂类之间唯一一条「HTTP 路由转出去」的缝:
+  //    以前 api.ts 直接 import 垂类模块,core_purity 第 8 条一直红。搬成插槽后,
+  //    少一处 draft 白名单登记(或 key 写错)都会让路由悄悄变 404 —— 类型检查看不出来。
+  resetPlugin();
+  registerPlugin(plugin());
+  assert.equal(typeof currentPlugin().analyzeSymbol, "function");
+  // 不提供就是不提供(消费方走 `?.`),不能变成"有但是坏的"
+  resetPlugin();
+  registerPlugin(plugin({ analyzeSymbol: undefined }));
+  assert.equal(currentPlugin().analyzeSymbol, undefined);
+  resetPlugin();
+  registerPlugin(plugin());
+  assert.equal(typeof currentPlugin().analyzeSymbol, "function", "回归到已注册的 finance 包");
+});
+
 test("快照与原包解耦:注册后改原对象改不动已生效的包", () => {
   const mutable: Plugin = {
     ...FINANCE_PLUGIN,

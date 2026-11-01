@@ -55,11 +55,19 @@ def is_stock(key):
 
 
 def key_of(code):
-    if code[0] in "69":
+    """代码 → 带市场前缀的键，按上面的号段表逐段判。
+
+    🔴 不能只看首位(原来按首位在 "69" / "48" 里判):5x 是沪市 ETF、900x 是沪 B 股、
+    920x 是北交所，只按首位归会把它们全算进深市，而且不报错、只是数错。
+    认不出号段返回 None(调用方按「这一只不在行情里」跳过)。
+    """
+    if code[:3] in SH:
         return "sh" + code
-    if code[0] in "48":
+    if code[:3] in SZ:
+        return "sz" + code
+    if code[:2] in BJ:
         return "bj" + code
-    return "sz" + code
+    return None
 
 
 def load_members():
@@ -128,7 +136,7 @@ def main():
         MKT[dt] = (sum(1 for v in stocks if v > 0) / len(stocks), st.median(stocks), len(stocks))
         row = {}
         for ic, codes in members.items():
-            vals = [chg[key_of(c)] for c in codes if key_of(c) in chg]
+            vals = [chg[k] for k in (key_of(c) for c in codes) if k in chg]
             if len(vals) < 5:
                 continue
             row[ic] = (sum(1 for v in vals if v > 0) / len(vals), st.median(vals))

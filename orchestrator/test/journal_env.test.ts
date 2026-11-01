@@ -40,8 +40,8 @@ test("当时板位:涨停池里按连板数分;不在涨停池看炸板池;池�
 const FAKE = String.raw`import json,sys,os
 a=sys.argv; ep=a[a.index('--endpoint')+1]; out=a[a.index('--out-dir')+1]
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'args':args})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':ep,'args':args})+'\n')
 os.makedirs(os.path.join(out,'raw'),exist_ok=True)
 def done(env,code=0): print(json.dumps(env)); sys.exit(code)
 d=args.get('date','')
@@ -53,7 +53,7 @@ if ep in ('em_zt_pool','em_zb_pool'):
   p=cfg.get('zt' if ep=='em_zt_pool' else 'zb',{}).get(d)
   if p is None: done({'status':'failed','reason':'池子取不到','evidence':[]},3)
   ref='raw/%s_%s_%d.json'%(ep,d,os.getpid())
-  json.dump({'data':{'pool':[dict({'c':e[0],'n':'x','lbc':e[1],'fbt':e[2],'hybk':'行业'},**({'zbc':e[3]} if len(e)>3 else {})) for e in p]}},open(os.path.join(out,ref),'w'))
+  json.dump({'data':{'pool':[dict({'c':e[0],'n':'x','lbc':e[1],'fbt':e[2],'hybk':'行业'},**({'zbc':e[3]} if len(e)>3 else {})) for e in p]}},open(os.path.join(out,ref),'w',encoding='utf-8'))
   done({'status':'ok','evidence':[{'field':'pool_size','value':len(p),'raw_ref':ref}]})
 done({'status':'failed','reason':'unknown','evidence':[]},3)
 `;

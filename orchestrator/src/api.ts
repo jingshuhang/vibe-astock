@@ -24,7 +24,7 @@ import { resumeUnifiedTask, runUnifiedTask } from "./task_service.ts";
 import { deepTargetResolverFor } from "./deep_target_registry.ts";
 import { notifyAction, notifyOverview, startScheduler } from "./notify.ts";
 import { runView, runViewAction } from "./views.ts";
-import { analyzeStock, type StockAnalysisResult } from "./finance/stock_analysis.ts";
+import { currentPlugin } from "./plugin.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -429,13 +429,15 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         const b = await readBody(req);
         return send(res, 200, auditCheckHead(ctx, b.head));
       }
-      // ---- 个股分析（本地规则引擎，不依赖任何外部服务） ----
-      if (req.method === "POST" && url.pathname === "/analysis/stock") {
+      // ---- 逐个代码的分析（本地规则引擎，不依赖任何外部服务） ----
+      // 具体实现由垂类给(plugin.analyzeSymbol):Core 的 HTTP 层不再 import 垂类模块。
+      const analyze = currentPlugin().analyzeSymbol;
+      if (analyze && req.method === "POST" && url.pathname === "/analysis/stock") {
         const b = await readBody(req);
         const symbol = String(b?.symbol ?? "");
         if (!symbol) return send(res, 400, { error: "missing_symbol" });
         try {
-          const result: StockAnalysisResult = await analyzeStock(ctx, symbol);
+          const result = await analyze(ctx, symbol);
           return send(res, 200, result);
         } catch (e) {
           return send(res, 500, { error: "analysis_failed", message: e instanceof Error ? e.message.slice(0, 200) : String(e) });

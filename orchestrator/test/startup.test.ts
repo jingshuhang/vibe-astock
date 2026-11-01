@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { accessTokenPath, ensureAccessToken, isPlainRemoteHttp, normalizePublicUrl } from "../src/access_token.ts";
+import { privateFilePermissions } from "../src/fsutil.ts";
 import {
   createShutdownMonitor, parseStartupArgs, remoteLinkLines, resolveStartupPorts, startupChildEnvs, startupMissingFiles, waitUntilReady,
 } from "../src/startup.ts";
@@ -109,25 +110,31 @@ test("远程访问的公网地址只收 http(s) 根地址：子路径、凭据�
   assert.equal(isPlainRemoteHttp("http://[::1]:5930"), false);
 });
 
-test("远程访问口令：首次生成 0600 文件并沿用，换链接才变；环境变量优先且必须合格", () => {
+test("远程访问口令：首次生成后只有当前用户能读并沿用，换链接才变；环境变量优先且必须合格", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-access-"));
   const dataRoot = path.join(root, "data");
   fs.mkdirSync(dataRoot);
   fs.writeFileSync(path.join(root, "vibe-research.config.json"), JSON.stringify({ paths: { data_root: ".local" } }));
   const env = { VRA_DATA_ROOT: dataRoot };
+  const file = accessTokenPath(root, env);
+  // 🔴 判据走 privateFilePermissions:POSIX 看 mode 位、Windows 看 NTFS DACL。
+  //    直接断言 mode & 0o777 === 0o600 在 Windows 上永远不成立——Windows 根本没有那几位,
+  //    写成 0o600 也是空操作(实测 chmod 600 后读回来是 0o666),那样的断言只会假装测了权限。
+  const perms = () => privateFilePermissions(file);
   try {
-    const file = accessTokenPath(root, env);
     assert.equal(file, path.join(dataRoot, "access.token"));
     const first = ensureAccessToken(root, env);
     assert.equal(first.source, "new");
     assert.match(first.token, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(fs.readFileSync(file, "utf8").trim(), first.token);
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(perms().secure, true, perms().detail);
 
     fs.chmodSync(file, 0o644);
     const again = ensureAccessToken(root, env);
     assert.deepEqual(again, { token: first.token, source: "file" }, "机器重启链接不变");
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600, "权限被放宽过也要收回");
+    // 放宽那一步只有 POSIX 能验证(mode 位就是权限本身);Windows 收紧靠 icacls 断开继承,
+    // 在 windows_support.test.ts 里单独测,这里不重复也不假装。
+    if (process.platform !== "win32") assert.equal(perms().secure, true, "权限被放宽过也要收回");
 
     const rotated = ensureAccessToken(root, env, true);
     assert.equal(rotated.source, "new");

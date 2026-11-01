@@ -168,14 +168,14 @@ const FAKE = String.raw`import json,sys,os
 a=sys.argv; ep=a[a.index('--endpoint')+1]; out=a[a.index('--out-dir')+1]
 sym=a[a.index('--symbol')+1] if '--symbol' in a else ''
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'sym':sym,'args':args})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':ep,'sym':sym,'args':args})+'\n')
 os.makedirs(os.path.join(out,'raw'),exist_ok=True)
 def done(env): print(json.dumps(env)); sys.exit(0)
 if ep=='index_constituents':
   if cfg.get('idx_fail'): done({'status':'failed','evidence':[],'errors':[{'source':'csindex','endpoint':'index constituents','error':"ReadTimeout: HTTPSConnectionPool(host='oss-ch.csindex.com.cn', port=443): Read timed out. (read timeout=40)"}]})
   ms=cfg['members']; ref='raw/extracted_csindex_%s_%d.json'%(sym,os.getpid())
-  if not cfg.get('no_raw'): json.dump({'rows':[{'code':c,'name':n} for c,n in ms]},open(os.path.join(out,ref),'w'))
+  if not cfg.get('no_raw'): json.dump({'rows':[{'code':c,'name':n} for c,n in ms]},open(os.path.join(out,ref),'w',encoding='utf-8'))
   ev=[{'field':'index_member_count','value':cfg.get('count',len(ms)),'period':'2026-09-30','raw_ref':ref}]
   ev+=[{'field':'index_member','value':c+' '+n,'period':'2026-09-30','raw_ref':ref} for c,n in ms[:30]]
   done({'status':'ok','evidence':ev})

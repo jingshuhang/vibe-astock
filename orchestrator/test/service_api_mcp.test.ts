@@ -11,7 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
 import { ServiceError, assertArgs, chatSend, debateStart, fetchEndpoint, guidedToolTurn, ingestFiles, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, listTools, runToolRequest, redact, researchEnv, researchRuntimeEnv, researchStatus, safePath, startResearch, translateHeadlines, type ServiceContext, displayUrl } from "../src/service.ts";
-import { writeJson } from "../src/fsutil.ts";
+import { writeJson, privateFilePermissions } from "../src/fsutil.ts";
 import { reserveResearch, readResearchControl, updateResearchControl } from "../src/research_control.ts";
 import { detectPython } from "../src/init.ts";
 import { addReport } from "../src/report_library.ts";
@@ -774,7 +774,9 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
   } finally { srv2.close(); }
   const tk = resolveToken(ctx, {});
   assert.equal(tk.source, "generated"); assert.ok(tk.token.length >= 32 && fs.existsSync(tk.file));
-  assert.equal((fs.statSync(tk.file).mode & 0o777), 0o600);
+  // 🔴 权限判据按平台:POSIX 看 mode 位,Windows 看 NTFS DACL(那边的 mode 位恒为 0o666,写什么都一样)
+  const permission = privateFilePermissions(tk.file);
+  assert.equal(permission.secure, true, permission.detail);
   assert.equal(resolveToken(ctx, {}).source, "file");
   assert.equal(resolveToken(ctx, { VRA_API_TOKEN: "e".repeat(20) }).source, "env");
 });
@@ -1251,8 +1253,10 @@ test("全局 direct 模式让普通对话与标题翻译走同一份已验证 AP
     assert.equal(chat.reply, "这是一次不使用工具的直接回答。");
     assert.equal(chat.report_sources.length, 0);
     // 直连不经过 Agent 那条路径，长度一样要拦：问题超 4000、整条超 64000、空问题都不发
+    // ⚠️ 裸消息(没有「【问题】」分隔)不卡 4000：AI 盯盘这类自动化请求就是把整页数据整条发来,
+    //    后端分不出哪段是手打的,只受 64000 资源上限约束(page_context.ts);4000 由界面自己挡。
     const page = `【当前页面的数据】\n${"甲".repeat(9000)}\n\n【问题】\n`;
-    for (const message of ["问".repeat(4001), `${page}${"问".repeat(4001)}`, `【当前页面的数据】\n${"甲".repeat(64_001)}\n\n【问题】\n短问题`, `${page}  `, "  "]) {
+    for (const message of ["问".repeat(64_001), `${page}${"问".repeat(4001)}`, `【当前页面的数据】\n${"甲".repeat(64_001)}\n\n【问题】\n短问题`, `${page}  `, "  "]) {
       await assert.rejects(chatSend(ctx, { session: "direct-chat", message, llm, executionMode: "direct" }),
         (e: unknown) => e instanceof ServiceError && e.code === "bad_message", message.slice(-20));
     }

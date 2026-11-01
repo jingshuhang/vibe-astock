@@ -86,8 +86,8 @@ const FAKE = String.raw`import json,sys,os,hashlib
 a=sys.argv; ep=a[a.index('--endpoint')+1]; out=a[a.index('--out-dir')+1]
 sym=a[a.index('--symbol')+1] if '--symbol' in a else ''
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'args':args})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':ep,'args':args})+'\n')
 os.makedirs(os.path.join(out,'raw'),exist_ok=True)
 def done(env,code=0): print(json.dumps(env)); sys.exit(code)
 def evid(*p): return 'ev-'+hashlib.sha1('|'.join(p).encode()).hexdigest()[:12]
@@ -96,7 +96,7 @@ if ep=='tx_kline':
   rows=cfg.get('klines',[])
   if not rows: done({'status':'failed','reason':'腾讯 K 线返回 0 根','evidence':[]})
   ref='raw/extracted_k_%d.json'%os.getpid()
-  json.dump({'rows':[{'date':x,'open':1,'high':1,'low':1,'close':1000,'volume':1} for x in rows]},open(os.path.join(out,ref),'w'))
+  json.dump({'rows':[{'date':x,'open':1,'high':1,'low':1,'close':1000,'volume':1} for x in rows]},open(os.path.join(out,ref),'w',encoding='utf-8'))
   done({'status':'ok','evidence':[{'field':'kline_points','value':len(rows),'raw_ref':ref}]})
 if ep=='cn_shortline_daily':
   v=cfg.get('daily',{}).get(d)

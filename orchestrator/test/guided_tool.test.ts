@@ -7,9 +7,13 @@ import fs from "node:fs";
 import os from "node:os";
 
 import "../src/finance/register.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 import { GuidedToolError, guidedToolTurn, type GuidedToolDeps } from "../src/guided_tool.ts";
 import { detectPython } from "../src/init.ts";
 import { chatSend } from "../src/chat.ts";
+
+/** 私人版词表置空 → complianceGate 透传:凡是靠「首轮字段被拦下」造出来的用例都走另一条脚本 */
+const gateEmpty = FINANCE_GATE.patterns.length === 0 && FINANCE_GATE.regexps.length === 0;
 
 const opts = { repoRoot: process.cwd(), dataRoot: process.cwd() };
 const req = { name: "sample", label: "样例任务", session: "s1", message: "请验证这个想法" };
@@ -61,17 +65,24 @@ function model(status: "needs_input" | "ready" | "complete", over: Record<string
 }
 
 test("首轮所有可见字段过检查；一次修正后只执行一次正式工具", async () => {
-  const replies = [model("ready", { hypothesis: "建议建仓" }), model("ready"), model("complete")];
+  // 词表非空:首轮 hypothesis 里的红线用语会被 assertVisible 拦下 → 触发唯一一次修正,
+  // 修正后仍只执行一次正式工具。词表置空(gate 透传)时没有可拦的字段,首轮直接进执行。
+  const replies = gateEmpty
+    ? [model("ready"), model("complete")]
+    : [model("ready", { hypothesis: "建议建仓" }), model("ready"), model("complete")];
   const calls: unknown[] = [];
+  let corrections = 0;
   const out = await guidedToolTurn(opts, req, {
     chat: async (o, r) => {
-      if (replies.length === 2) assert.match(String(o.developerInstructions), /修正/);
+      // 只认那个唯一标记:常规指令里本来就有「追问修正所需的信息」字样
+      if (/【唯一一次格式修正】/.test(String(o.developerInstructions))) corrections++;
       return { session: r.session!, reply: replies.shift()!, redacted: 0, duration_ms: 1 };
     },
     runTool: async (_name, body) => { calls.push(body); return { ok: true }; },
   });
   assert.equal(out.status, "complete");
   assert.equal(replies.length, 0);
+  assert.equal(corrections, gateEmpty ? 0 : 1, gateEmpty ? "词表空时不该有修正" : "越界字段要触发一次修正");
   assert.equal(calls.length, 2, "能力查询一次，正式工具一次");
 });
 
@@ -86,8 +97,12 @@ test("报告格式失败只修正模型输出，不重跑真实工具", async ()
   assert.equal(toolCalls, 2);
 });
 
-for (const broken of ["非 JSON", model("ready", { title: "x".repeat(161) }),
-  model("ready", { logic: ["建议建仓"] }), model("ready", { extra: "unexpected" })]) {
+// logic 里放红线用语这一档只对「词表非空」有意义:词表空时它本来就不该被拦,不能算结构失败。
+const brokenReplies = [...["非 JSON", model("ready", { title: "x".repeat(161) })],
+  ...(gateEmpty ? [] : [model("ready", { logic: ["建议建仓"] })]),
+  model("ready", { extra: "unexpected" })];
+
+for (const broken of brokenReplies) {
   test(`结构或边界连续两次失败明确拒绝，不执行工具 (${broken.slice(0, 30)})`, async () => {
     let modelCalls = 0;
     let toolCalls = 0;

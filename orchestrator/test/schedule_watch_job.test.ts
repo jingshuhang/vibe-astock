@@ -21,8 +21,8 @@ const PY = process.env.VRA_PYTHON ?? detectPython(REPO) ?? detectPython(path.joi
 const FAKE_EP = String.raw`import json,sys
 a=sys.argv; ep=a[a.index('--endpoint')+1]
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'args':args})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':ep,'args':args})+'\n')
 def done(env): print(json.dumps(env)); sys.exit(0)
 if ep=='tx_quotes_batch':
   codes=args['codes']
@@ -33,8 +33,8 @@ done({'status':'failed','reason':'unknown','evidence':[]})
 `;
 const FAKE_ANN = String.raw`import json,sys
 a=sys.argv; sym=a[a.index('--symbol')+1]
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':'fetch_announcements','sym':sym})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':'fetch_announcements','sym':sym})+'\n')
 if sym in cfg.get('ann_crash',[]): print('Traceback: boom'); sys.exit(1)
 if sym in cfg.get('ann_fail',[]): print(json.dumps({'status':'failed','evidence':[],'errors':[{'source':'szse','error':'HTTP 503'}]})); sys.exit(0)
 ev=[{'field':'announcement_title','value':t,'period':d,'record_key':d+'-'+t} for d,t in cfg.get('ann',{}).get(sym,[])]

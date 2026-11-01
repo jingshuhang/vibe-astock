@@ -21,7 +21,11 @@ export function classify(file, name, err, code) {
   if (/\/private\/|要可执行|\.command/i.test(e)) return "env-platform";                                   // POSIX 斜杠路径 / 可执行位
   if (/落在运行目录之外|C:[\\/]tmp[\\/](some-run|repo)/i.test(e)) return "env-platform";                  // 测试假设 C:\tmp 在运行目录内
   if (/[\\/]s[\\/]fetch_quote\.py|\\s\\fetch_quote/i.test(e)) return "env-platform";                        // 路径分隔符 \ vs /
-  if (/d:[\\/]program files[\\/]wb[\\/]workbuddy/i.test(e)) return "env-platform";                         // 实机安装路径大小写/分隔符
+  // ⚠️ 分隔符可能被 TAP 文本转义成两个反斜杠(`'d:\\program files\\...'`),所以用 [\\/]+ 而不是 [\\/]
+  if (/d:[\\/]+program files[\\/]+wb[\\/]+workbuddy/i.test(e)) return "env-platform";                     // 实机安装路径大小写/分隔符
+  // POSIX 命名管道(mkfifo)在 Windows 上造不出来:Windows 的命名管道在 \\.\pipe\ 里,不是文件系统对象,
+  // 原生 win32 进程看到的只是一坨读得出内容的普通文件 ⇒ 「读到管道要给 null」这一档本机没法验,不是产品坏了。
+  if (/命名管道|mkfifo/i.test(all)) return "env-platform";
   if (/ENOENT.*providers[\\/].*\.json/i.test(e)) return "env-platform";                                    // 本机没放该 provider 配置文件
   if (/Traceback \(most recent call last\)/i.test(e)) return "env-spawn";                                  // Python 子进程崩
   if (/reg add|reg\.exe|Program Blacklist|取不到当前用户 SID|whoami/i.test(all)) return "env-sandbox";   // reg.exe 被黑名单
@@ -40,6 +44,7 @@ export function classify(file, name, err, code) {
 
 /** 每类的可读说明,报告与基线里给人看。 */
 export const CAUSE_NOTES = {
+  "flaky-load": "并行跑红、单独复跑通过:负载相关的偶发,不是回归(自动识别)",
   "env-symlink": "沙箱禁止创建符号链接",
   "env-platform": "Windows 与 POSIX 差异(路径斜杠 / ESM c: 协议 / 可执行位)",
   "env-sandbox": "reg.exe 等被安全策略黑名单拦截",

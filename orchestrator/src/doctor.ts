@@ -118,7 +118,9 @@ export function scanSecrets(repoRoot: string, env: NodeJS.ProcessEnv): { hits: {
   for (const { p: f, inTest } of files) {
     let text: string;
     try { if (fs.statSync(f).size > SCAN_MAX_BYTES) continue; text = fs.readFileSync(f, "utf8"); } catch { continue; }
-    const rel = path.relative(repoRoot, f);
+    // 报告里的路径一律用 "/"(与下面 relLocal 同一写法):同一份体检报告里混着
+    // `src\a.ts` 和 `.local/` 两种分隔符,复制出去比对、贴到 issue 里都对不上
+    const rel = path.relative(repoRoot, f).split(path.sep).join("/");
     text.split("\n").forEach((l, i) => {
       for (const pat of SECRET_PATTERNS_STRICT) if (pat.re.test(l)) hits.push({ file: rel, line: i + 1, what: pat.name });
       if (inTest) return;

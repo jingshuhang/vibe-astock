@@ -13,6 +13,7 @@ import { sha256File, writeJson } from "../src/fsutil.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "../src/schemas.ts";
 import { loadLedgerFromDisk, saveLedger } from "../src/fetchrun.ts";
 import { loadProductConfig } from "../src/productConfig.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
@@ -177,7 +178,11 @@ test("profile 阶段:缺账本 / 缺阶段文件 → 不过;quote_decision 与�
   const prof = JSON.parse(fs.readFileSync(path.join(d, "stages", "profile.json"), "utf8"));
   writeJson(path.join(d, "stages", "profile.json"), { ...prof, summary: `${prof.summary} 建议逢低买入。` });
   r = validateStage("profile", loadRun(d));
-  assert.ok(r.errors.some((e) => e.includes("触发产出红线")), JSON.stringify(r.errors));
+  // 私人版把词表置空(合规 gate 透传):此时这条链路不该再拦;词表填回去(恢复对外合规)必须重新拦。
+  // 两边都写死,才能保证「把 gate 调回来」时不会因为测试已经改成透传而悄悄失去保护。
+  const gateEmpty = FINANCE_GATE.patterns.length === 0 && FINANCE_GATE.regexps.length === 0;
+  if (gateEmpty) assert.deepEqual(r.errors, [], "词表置空时 gate 透传,自由文本不再被拦");
+  else assert.ok(r.errors.some((e) => e.includes("触发产出红线")), JSON.stringify(r.errors));
   // 免责声明式的"提及"不该被拦
   writeJson(path.join(d, "stages", "profile.json"), { ...prof, summary: `${prof.summary} 本节不含目标价与止损位。` });
   assert.deepEqual(validateStage("profile", loadRun(d)).errors, []);

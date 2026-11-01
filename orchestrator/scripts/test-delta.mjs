@@ -160,9 +160,26 @@ if (has("--update-baseline")) {
   }
   const fresh = [...current.values()]
     .map((v) => {
-      const hit = (errMap[v.file] || []).find((e) => e.name === v.name) || {};
+      const hit = (errMap[v.file] || []).find((e) => e.name === v.name);
+      // 🔴 `harvestErrors` 是**单独重跑**失败文件来抓错误文本的。所以:
+      //    - 找到了 ⇒ 单跑也失败,报错就是真实的;
+      //    - 没找到 ⇒ 并行跑红、单独复跑通过 ⇒ 负载相关的偶发,**自动标 flaky**。
+      //    以前这里 `|| {}` 直接把"没找到"吞成空 err,归类器只能给 code-or-unclear,
+      //    于是三条负载偶发在报告里长得像"待修的真实代码问题"(而且没有错误文本,根本无从下手)。
+      if (!hit) {
+        const flakyEntry = {
+          file: v.file, name: v.name, cause: "flaky-load", flaky: true,
+          err: "(并行跑红、单独复跑通过:负载相关,不是回归)",
+        };
+        return flakyEntry;
+      }
       const err = (hit.err || "").replace(/\s+/g, " ");
-      const entry = { file: v.file, name: v.name, cause: classify(v.file, v.name, err, hit.code), err: err.slice(0, 140) };
+      const entry = {
+        file: v.file, name: v.name, cause: classify(v.file, v.name, err, hit.code),
+        // 单跑也失败、却没抓到错误文本(被取消 / 顶层崩溃):照实写出来,别留一个空字符串
+        // 让人误以为"没有报错"。归类器只能给 code-or-unclear,所以这里必须自己说清楚。
+        err: (err || "(失败但没抓到错误文本:被取消或顶层崩溃,用 node --test test/<file> 复现)").slice(0, 140),
+      };
       if (prevFlaky.get(`${v.file}::${v.name}`)) entry.flaky = true;
       return entry;
     });
@@ -173,7 +190,10 @@ if (has("--update-baseline")) {
     const prev = JSON.parse(readFileSync(BASELINE, "utf8"));
     const freshKeys = new Set(fresh.map((e) => `${e.file}::${e.name}`));
     for (const e of prev.entries || []) {
-      if (e.flaky && !freshKeys.has(`${e.file}::${e.name}`)) kept.push(e);
+      if (e.flaky && !freshKeys.has(`${e.file}::${e.name}`)) {
+        // 保留下来的旧条目也可能是空 err(上一版把它吞掉了),同样要补一句,别留白
+        kept.push({ ...e, err: e.err || "(本轮通过;历史上是负载偶发,没抓到过错误文本)" });
+      }
     }
   }
   const entries = [...fresh, ...kept].sort((a, b) => (a.file + a.name).localeCompare(b.file + b.name));
@@ -190,7 +210,13 @@ if (has("--update-baseline")) {
   process.stdout.write(`[test-delta] 基线已写入 ${BASELINE}\n  共 ${entries.length} 条\n`);
   if (kept.length) process.stdout.write(`    其中本轮通过但按 flaky 保留 ${kept.length} 条\n`);
   const envN = entries.filter((e) => isEnv(e.cause)).length;
-  process.stdout.write(`    其中 环境性(env-*) ${envN} 条 / 代码问题(code-*) ${entries.length - envN} 条\n`);
+  // ⚠️ 只数"非环境性的 flaky":否则一条既 env-* 又 flaky 的会被三类同时数一遍,
+  //    三数之和比总数还大,读的人第一眼就会怀疑这份汇总。
+  const flakyN = entries.filter((e) => e.flaky && !isEnv(e.cause)).length;
+  // ⚠️ 三类要分开报:环境性 / 负载偶发 / 真实代码问题。把偶发算进 code-* 会让"待修债务"
+  //    每重建一次基线就虚高一次,久了就没人再看这个数字。
+  const codeN = entries.filter((e) => !isEnv(e.cause) && !e.flaky).length;
+  process.stdout.write(`    其中 环境性(env-*) ${envN} 条 / 负载偶发(flaky) ${flakyN} 条 / 代码问题(code-*) ${codeN} 条\n`);
   for (const [c, n] of Object.entries(byCause).sort((a, b) => b[1] - a[1])) process.stdout.write(`    ${String(n).padStart(3)}  ${c.padEnd(18)} ${CAUSE_NOTES[c] || ""}\n`);
   process.exit(0);
 }
@@ -263,7 +289,11 @@ if (!added.length && !fixed.length && !flakyPassed.length && !flakyNow.size) {
 // 基线里仍失败的 code-*:历史上是「该修还得修」的债务提醒。私人版不再把断言当约束
 // (合规类断言已按个人版放宽),所以这里只留一行汇总,不再逐条刷屏;
 // 想看明细直接读基线文件,或加 --show-code 打印清单。
-const stillCode = [...current.keys()].filter((k) => { const e = baseMap.get(k); return e && !isEnv(e.cause); });
+const stillCode = [...current.keys()].filter((k) => {
+  const e = baseMap.get(k);
+  // 标了 flaky 的已经在上面的 ⚪ 段落里单独报过,不再算进"待修债务"
+  return e && !isEnv(e.cause) && !e.flaky;
+});
 if (stillCode.length) {
   const byC = {};
   for (const k of stillCode) { const c = baseMap.get(k).cause; byC[c] = (byC[c] || 0) + 1; }

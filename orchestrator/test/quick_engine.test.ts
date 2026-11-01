@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 import "../src/finance/register.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 import { QuickEngine, type QuickMaterial } from "../src/engines/quick_engine.ts";
 import {
   TaskRouter, makeResearchTask, type ResearchTaskKind, type RouteDecision, type TaskEvent, type TaskInputRef,
@@ -188,13 +189,15 @@ test("模型引用不存在的材料版本、段落编号无效或命中合规�
       code: "citation_invalid",
       content: "本期资料显示收入同比增长。",
     },
-    {
+    // 合规红线这一档只在词表非空时有意义:私人版把词表置空后 complianceGate 透传,
+    // 「建议建仓」不再是越界内容(引用校验那两档不受影响,照旧必须拒绝交付)。
+    ...(FINANCE_GATE.patterns.length === 0 && FINANCE_GATE.regexps.length === 0 ? [] : [{
       output: { selections: [
         { kind: "evidence", id: "bundle-a", revision: "rev-bundle-a", excerptId: "x1" },
       ] },
       code: "compliance_rejected",
       content: "建议建仓。",
-    },
+    }]),
   ];
   for (const item of cases) {
     const engine = new QuickEngine({

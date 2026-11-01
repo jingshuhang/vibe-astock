@@ -4,6 +4,7 @@ import { z } from "zod";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { CITE_TARGET_HIDDEN, cleanCite, createToolExecutor, type AssistantTool } from "../src/assistant_bridge.ts";
+import { FINANCE_GATE } from "../src/finance/gate_rules.ts";
 import { assistantTools, serviceContext } from "../src/service.ts";
 import "../src/finance/register.ts";
 
@@ -62,9 +63,11 @@ test("对话工具的来源:取数写端点名、实际来源、取数时间和�
     { label: "联网搜索", target: "800G 光模块", count: 2, links: [{ title: "T", url: "https://a.example/x" }] });
   assert.deepEqual(cite("search_web", { query: "q" }), { label: "联网搜索", target: "q" });
   // 来源面板不经过回答的合规检查:模型写的关键词、网页标题自己过一遍
+  // 私人版词表置空 → complianceGate 透传,原文照放;把词表填回去(恢复对外合规)后应重新被隐去。
+  const gateEmpty = FINANCE_GATE.patterns.length === 0 && FINANCE_GATE.regexps.length === 0;
   assert.deepEqual(cite("search_web", { query: "某股 目标价 多少" }, { results: [{ title: "某券商给出目标价", url: "https://a.example/y" }, { title: "公告", url: "https://a.example/z" }] }),
-    { label: "联网搜索", target: CITE_TARGET_HIDDEN, count: 2, links: [{ title: "", url: "https://a.example/y" }, { title: "公告", url: "https://a.example/z" }] });
-  assert.deepEqual(cite("fetch_endpoint", { endpoint: "建仓建议" }, { envelope: { primary_source: "tencent" } }), { label: "数据工具", sources: ["tencent"] });
+    { label: "联网搜索", target: gateEmpty ? "某股 目标价 多少" : CITE_TARGET_HIDDEN, count: 2, links: [{ title: gateEmpty ? "某券商给出目标价" : "", url: "https://a.example/y" }, { title: "公告", url: "https://a.example/z" }] });
+  assert.deepEqual(cite("fetch_endpoint", { endpoint: "建仓建议" }, { envelope: { primary_source: "tencent" } }), { label: gateEmpty ? "建仓建议" : "数据工具", sources: ["tencent"] });
   assert.deepEqual(cite("read_web_page", { url: "https://a.example/old" }, { url: "https://a.example/new", fetched_at: "2026-10-08T07:03:00Z", truncated: true }),
     { label: "读取网页", as_of: "2026-10-08T07:03:00Z", partial: true, links: [{ title: "", url: "https://a.example/new" }] });
   assert.deepEqual(cite("run_tool", { name: "calc", input: { fn: "pe_ttm", args: {} } }), { label: "计算工具", target: "calc · pe_ttm" });

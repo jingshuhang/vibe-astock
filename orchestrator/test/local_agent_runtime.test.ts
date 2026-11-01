@@ -47,7 +47,11 @@ test("订阅子进程只继承运行必需变量，不继承其它服务密钥�
   for (const agent of ["claude", "codebuddy", "codex"] as const) {
     const env = localSubscriptionEnv(base, agent);
     for (const key of ["OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "MIMO_API_KEY", "NODE_OPTIONS"]) assert.equal(env[key], undefined);
-    assert.equal(env.HTTPS_PROXY, base.HTTPS_PROXY);
+    // 🔴 代理变量故意不带进子进程(0eeacf0):系统代理会把 CLI 访问本机内部认证端口的请求劫持到外部,
+    //    认证探测直接失败。这条和「密钥不外传」一样是硬约束,不能因为「代理看起来该继承」而放回去。
+    for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"]) {
+      assert.equal(localSubscriptionEnv({ ...base, [key]: "http://proxy.invalid:80" }, agent)[key], undefined, key);
+    }
     assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, agent === "claude" ? base.CLAUDE_CODE_OAUTH_TOKEN : undefined);
   }
   const bin = fakeNodeExecutable(dir, "claude", `process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({result:JSON.stringify({leak:process.env.AWS_SECRET_ACCESS_KEY??null,oauth:!!process.env.CLAUDE_CODE_OAUTH_TOKEN})})));`);

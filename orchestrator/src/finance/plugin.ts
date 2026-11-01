@@ -24,6 +24,7 @@ import { buildGateRewritePrompt, buildStagePrompt } from "./stages.ts";
 import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
 import { appendThermoLedger, applyThermometerHistory, readThermoLedger, thermoDir, thermoLedgerOverview, thermoLedgerPath } from "./thermo_history.ts";
 import { PRODUCT_NAME } from "../brand.ts";
+import type { ServiceContext } from "../service.ts";
 
 /** 阶段顺序:摸清公司 → 财务 → 一致预期 → 估值 → 风险 → 成文 */
 export const FINANCE_STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
@@ -218,6 +219,14 @@ export const FINANCE_PLUGIN: Plugin = {
   ],
   // 设置页选填的 SEC 联系方式(EDGAR 要求请求头里写访问者的英文姓名和邮箱)
   savedCredentials: [SEC_CONTACT_CREDENTIAL],
+  // POST /analysis/stock 由垂类实现(原来 api.ts 直接 import 这个模块,Core 里就有了垂类 import)。
+  // 🔴 必须惰性 import:stock_analysis.ts 反过来 import service.ts,而 service.ts 又经 register 拿插件 ——
+  //    写成静态 import 就是循环初始化,注册表还没建好就读 FINANCE_PLUGIN(实测 ReferenceError:
+  //    Cannot access 'FINANCE_PLUGIN' before initialization,page_fallback / plugin / readme_numbers 三个文件直接起不来)。
+  analyzeSymbol: async (ctx, symbol) => {
+    const { analyzeStock } = await import("./stock_analysis.ts");
+    return analyzeStock(ctx as ServiceContext, symbol);
+  },
   doctorChecks: ({ dataRoot }) => {
     const rows = thermoLedgerOverview({ dataRoot });
     const bad = rows.filter((r) => r.unreadable || r.dropped > 0);

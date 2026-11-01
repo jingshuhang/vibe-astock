@@ -8,6 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { openAssistantBridge, type AssistantTool } from "../src/assistant_bridge.ts";
 import { assistantTurn } from "../src/assistant_turn.ts";
+import { chatLengthProblem, MAX_WITH_PAGE } from "../src/page_context.ts";
 import { assistantTools, confirmChatResearch, serviceContext, type ResearchProposal, type startResearch } from "../src/service.ts";
 import "../src/finance/register.ts";
 
@@ -124,7 +125,10 @@ test("手打上限只管问题：页面数据多也能问，历史只记问题�
 
   const bad = (message: string) => assert.rejects(assistantTurn(opts, { session: "page", message }, complete), (e: Error & { code?: string }) => e.code === "bad_message");
   await bad(`${page}\n\n【问题】\n${"问".repeat(4001)}`);
-  await bad("问".repeat(4001));
+  // 裸消息(没有「【问题】」分隔)不卡 4000:AI 盯盘这类自动化请求就是把整页数据整条发来,
+  // 后端分不出哪段是手打的,所以只受资源上限约束(见 page_context.ts)。4000 由界面自己挡。
+  assert.equal(chatLengthProblem("问".repeat(4001)), null, "4001 字的裸消息不该被后端拦");
+  await bad("问".repeat(MAX_WITH_PAGE + 1));
   await bad(`${page}\n\n【问题】\n   `);
   await bad(`${"甲".repeat(64_001)}\n【问题】\n短问题`);
   assert.equal(seen.length, 2, "被拦下的都没发出去");

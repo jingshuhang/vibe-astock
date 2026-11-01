@@ -162,8 +162,8 @@ test("正文格式:要有中文;编号、网址、代码块不算英文", () => 
 const FAKE = String.raw`import json,sys,os
 a=sys.argv; ep=a[a.index('--endpoint')+1]
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
-cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'args':args})+'\n')
+cfg=json.load(open('cfg.json',encoding='utf-8'))
+open('calls.log','a',encoding='utf-8').write(json.dumps({'ep':ep,'args':args})+'\n')
 key=args.get('date') or args.get('trade_date') or args.get('end') or '*'
 env=cfg.get(ep,{}).get(key) or cfg.get(ep,{}).get('*')
 if env is None: print(json.dumps({'status':'failed','reason':'假取数器没这份','evidence':[]})); sys.exit(3)

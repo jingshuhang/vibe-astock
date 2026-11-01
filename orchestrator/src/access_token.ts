@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { readConfiguredDataRoot, resolveDataRoot } from "./data_root.ts";
+import { restrictPrivateFile } from "./fsutil.ts";
 
 /** cookie / URL 都安全的字符集;32 位起步,够长才无法猜 */
 export const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]{32,256}$/;
@@ -44,7 +45,9 @@ export function ensureAccessToken(repoRoot: string, env: NodeJS.ProcessEnv = pro
     try { existing = fs.readFileSync(file, "utf8").trim(); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (isValidAccessToken(existing)) {
-      fs.chmodSync(file, 0o600);
+      // 🔴 不能只 chmod:Windows 的 mode 位对 NTFS DACL 没有任何作用,写了也是空操作,
+      //    口令文件照旧继承父目录权限(每个人都能看)。统一走 restrictPrivateFile。
+      restrictPrivateFile(file);
       return { token: existing, source: "file" };
     }
     // 文件不存在或内容不合格(被截断 / 手改坏):按首次生成处理
@@ -52,9 +55,10 @@ export function ensureAccessToken(repoRoot: string, env: NodeJS.ProcessEnv = pro
   const token = randomBytes(32).toString("base64url");
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   fs.writeFileSync(tmp, `${token}\n`, { mode: 0o600, flag: "wx" });
+  // 先收紧临时文件再改名(改名保留 DACL);反过来的话中间那一刻文件已被收紧前的权限覆盖
+  restrictPrivateFile(tmp);
   try { fs.renameSync(tmp, file); }
   catch (error) { fs.rmSync(tmp, { force: true }); throw error; }
-  fs.chmodSync(file, 0o600);
   return { token, source: "new" };
 }
 

@@ -70,15 +70,19 @@ test("统一 Deep 任务上下文只从当前子进程环境进入 RunConfig，�
 });
 
 test("makeConfig 默认值、run-id 形态、解释器根、取数子进程环境与日志脱敏清单", () => {
+  // 🔴 期望值不能写死 POSIX 路径:产品用 path.resolve / path.join,Windows 上会带盘符和反斜杠
+  //    (写死 "/tmp/repo" 在 Windows 上恒不等于 "C:\\tmp\\repo",红的从来不是产品)
+  const ROOT = path.resolve("/tmp/repo");
+  const VENV = path.resolve("/home/u/.venv");
   const cfg = makeConfig({ symbol: "600519", repoRoot: "/tmp/repo", python: "/home/u/.venv/bin/python" });
   assert.match(cfg.runId, /^\d{8}-\d{6}-600519$/);
-  assert.equal(cfg.runDir, "/tmp/repo/.local/runs/" + cfg.runId);
-  assert.equal(cfg.constitutionPath, "/tmp/repo/methodology/constitution.md");
+  assert.equal(cfg.runDir, path.join(ROOT, ".local", "runs", cfg.runId));
+  assert.equal(cfg.constitutionPath, path.join(ROOT, "methodology", "constitution.md"));
   assert.equal(cfg.engine, "none", "makeConfig 不替调用方选大脑");
   assert.equal(cfg.maxRetries, 2);
   assert.equal(cfg.turnTimeoutMs, 30 * 60_000);
   assert.ok(cfg.forbiddenPathPatterns.includes("交接资料") && !cfg.forbiddenPathPatterns.includes("/Users/"));
-  assert.ok(cfg.allowedPathPrefixes.includes("/tmp/repo") && cfg.allowedPathPrefixes.includes("/home/u/.venv"));
+  assert.ok(cfg.allowedPathPrefixes.includes(ROOT) && cfg.allowedPathPrefixes.includes(VENV));
   assert.equal(interpreterRoot("python3"), "");
   assert.match(defaultRunId("000001", new Date("2026-08-21T16:00:00Z")), /^20260822-000000-000001$/); // UTC 16:00 = 北京 次日 00:00
   // 取数子进程:白名单 + 调用方显式给的;密钥类变量一律不透传
