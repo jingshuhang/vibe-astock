@@ -103,12 +103,32 @@ test("推送正文:标题 + 事实行 + 本机链接,超长按字节截断", () 
   assert.match(long, /完整内容见收件箱/);
 });
 
-test("注册校验:id / 时刻 / 时区", () => {
+test("注册校验:id / 时刻 / 时区 / 任务自己的超时", () => {
   const h = harness();
   validateSchedule(h.def);
   assert.throws(() => validateSchedule({ ...h.def, timeZone: "Mars/Base" }), /时区/);
   assert.throws(() => validateSchedule({ ...h.def, jobs: [{ ...h.def.jobs[0]!, at: "25:00" }] }), /HH:MM/);
   assert.throws(() => validateSchedule({ ...h.def, jobs: [h.def.jobs[0]!, h.def.jobs[0]!] }), /重复/);
+  // 声明了超时的任务:必须是正数且不超过一小时(再长就不是定时任务了)
+  validateSchedule({ ...h.def, jobs: [{ ...h.def.jobs[0]!, timeoutMs: 15 * 60_000 }] });
+  for (const bad of [0, -1, Number.NaN, 61 * 60_000, Infinity]) {
+    assert.throws(() => validateSchedule({ ...h.def, jobs: [{ ...h.def.jobs[0]!, timeoutMs: bad }] }), /超时/, String(bad));
+  }
+});
+
+test("任务自己声明的超时真的生效:调 AI 那种任务不能按默认 5 分钟掐掉", async () => {
+  const ctx = tmpCtx();
+  try {
+    const h = harness();
+    // 一个 1.2 秒的预算:到点掐掉,并且报错里写的就是这个预算(证明用的是任务的,不是默认的 5 分钟)
+    const j = h.def.jobs[0]!;
+    h.def = { ...h.def, jobs: [{ ...j, timeoutMs: 1200 }] };
+    // 一个不听取消的慢任务:只能被超时掐掉,报错里写的就是这个预算(不是默认的 5 分钟)
+    h.setRun(() => new Promise(() => { /* 一直不返回 */ }));
+    const r = await tick(ctx, { now: sh("2026-10-08T15:40"), def: h.def });
+    assert.equal(r.ran[0]!.status, "failed");
+    assert.match(r.ran[0]!.note!, /超时\(1 秒\)/);
+  } finally { clean(ctx); }
 });
 
 test("到点前不跑、不查门;到点后跑一次,当天不再跑,第二天再跑", async () => {

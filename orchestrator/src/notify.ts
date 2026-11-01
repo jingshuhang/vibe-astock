@@ -64,6 +64,14 @@ export interface ScheduledJobDef {
   /** 默认时刻 HH:MM(计划时区),用户可改 */
   at: string;
   defaultEnabled: boolean;
+  /**
+   * 这个任务允许跑多久(毫秒)。不写 = `JOB_TIMEOUT_MS`(5 分钟)。
+   *
+   * 🔴 只有**真的要调 AI** 的任务才该设它:一轮模型调用自身就有 10 分钟上限,5 分钟会先把任务掐掉,
+   *    而掐的时候 AI 那边还在写 —— 记成失败、10 分钟后重试,就会写出第二份。
+   *    上限一小时(`MAX_JOB_TIMEOUT_MS`)。
+   */
+  timeoutMs?: number;
   run(job: JobContext): Promise<JobResult>;
 }
 
@@ -114,6 +122,9 @@ export function validateSchedule(def: ScheduleDef): void {
     if (seen.has(j.id)) throw new Error(`定时任务 id 重复:${j.id}`);
     seen.add(j.id);
     if (!HM.test(j.at)) throw new Error(`定时任务 ${j.id} 的时刻不是 HH:MM:${j.at}`);
+    if (j.timeoutMs !== undefined && (!Number.isFinite(j.timeoutMs) || j.timeoutMs <= 0 || j.timeoutMs > MAX_JOB_TIMEOUT_MS)) {
+      throw new Error(`定时任务 ${j.id} 的超时不是 1 毫秒到 ${MAX_JOB_TIMEOUT_MS} 之间的数:${String(j.timeoutMs)}`);
+    }
     if (typeof j.run !== "function") throw new Error(`定时任务 ${j.id} 缺少 run`);
   }
 }
@@ -502,6 +513,8 @@ async function pushAll(settings: Settings, m: NotifyMessage, deps: Deps): Promis
 // ---------------------------------------------------------------- 运行
 
 const JOB_TIMEOUT_MS = 5 * 60_000;
+/** 任务自己声明的上限只能到一小时:再长就不是「定时任务」而是一个该单独跑的后台作业了 */
+const MAX_JOB_TIMEOUT_MS = 60 * 60_000;
 const GATE_TIMEOUT_MS = 90_000;
 const GATE_RETRY_MS = 15 * 60_000;
 const BEAT_TIMEOUT_MS = 60_000;
@@ -574,16 +587,23 @@ async function deliver(ctx: ServiceContext, job: ScheduledJobDef, messages: Noti
   return [...new Set(notes.filter(Boolean))].join(";");
 }
 
-async function runJob(ctx: ServiceContext, def: ScheduleDef, job: ScheduledJobDef, now: Date, manual: boolean, deps: Deps): Promise<JobState> {
+async function runJob(ctx: ServiceContext, def: ScheduleDef, job: ScheduledJobDef, now: Date, manual: boolean, deps: Deps, touch?: () => void): Promise<JobState> {
   const key = `${ctx.dataRoot}\0${job.id}`;
   if (running.has(key)) throw new ServiceError("notify_busy", `「${job.label}」正在运行,等它跑完再试`);
   running.add(key);
   const { day, hm } = localClock(now, def.timeZone);
+  /**
+   * 长任务(调 AI 那种)跑起来时**每分钟按一下调度锁**:
+   * 锁只靠「上一个任务结束时 touch」的话,一个跑 20 分钟的任务会让另一个后台进程以为锁死了并清掉它。
+   * 每分钟按一下几乎没有开销,却让下面的超时阈值不必随任务时长放大(那会让崩溃后的恢复等更久)。
+   */
+  const heartbeat = touch ? setInterval(() => { try { touch(); } catch { /* 锁已被清掉就算了 */ } }, 60_000) : null;
+  heartbeat?.unref?.();
   try {
     const prev = loadState(ctx.dataRoot).jobs[job.id] ?? {};
     await mutateState(ctx.dataRoot, (s) => { s.jobs[job.id] = { ...prev, status: "running", note: "正在运行" }; });
     try {
-      const r = checkResult(await withTimeout(JOB_TIMEOUT_MS, (signal) => job.run({ ctx, day, now, signal, state: prev.data, manual, at: jobAt(loadSettings(ctx.dataRoot), job) }), `「${job.label}」`));
+      const r = checkResult(await withTimeout(job.timeoutMs ?? JOB_TIMEOUT_MS, (signal) => job.run({ ctx, day, now, signal, state: prev.data, manual, at: jobAt(loadSettings(ctx.dataRoot), job) }), `「${job.label}」`));
       const pushNote = await deliver(ctx, job, r.messages, now, hm, manual, deps);
       const note = [r.note ?? (r.messages.length ? `生成 ${r.messages.length} 条` : "没有要提醒的"), pushNote].filter(Boolean).join(";");
       const next: JobState = {
@@ -611,6 +631,7 @@ async function runJob(ctx: ServiceContext, def: ScheduleDef, job: ScheduledJobDe
       return next;
     }
   } finally {
+    if (heartbeat) clearInterval(heartbeat);
     running.delete(key);
   }
 }
@@ -743,7 +764,7 @@ export async function tick(ctx: ServiceContext, opts: { now?: Date; clock?: () =
         break;
       }
       if (jobAt(settings, j) > c.hm) { report.ran.push({ id: j.id, status: "deferred", note: "时钟往回调了,还没到点" }); continue; }
-      const st = await runJob(ctx, def, j, at, false, opts.deps ?? {}).catch((e): JobState => ({ status: "failed", note: e instanceof Error ? e.message : String(e) }));
+      const st = await runJob(ctx, def, j, at, false, opts.deps ?? {}, lock.touch).catch((e): JobState => ({ status: "failed", note: e instanceof Error ? e.message : String(e) }));
       report.ran.push({ id: j.id, status: st.status ?? "ok", ...(st.note ? { note: st.note } : {}) });
     }
     return report;

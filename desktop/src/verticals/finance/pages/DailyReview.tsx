@@ -562,6 +562,11 @@ export function DailyReview() {
             需要完整的多阶段流程，请进入<Link to="/research" className="text-primary hover:underline">个股研究</Link>。
           </p>
         ) : null}
+        {/* 定时任务也走这一步(默认 18:55,可在「提醒」页改):说清楚它存哪、什么情况下不写 —— 不然用户只会看到一个多出来的记录 */}
+        <p className="mt-3 text-[11px] leading-4 text-muted-foreground/80">
+          「提醒」页里的定时任务「Agent 复盘」（默认 18:55，可改、可关）会按这一屏自动写一份，存进「研究记录」的分类「复盘」。
+          它用的是后台默认模型，后台没配模型时不写；同一业务日已经有一篇也不再写。
+        </p>
       </GlassCard>
 
       {/* 3. 短线 */}

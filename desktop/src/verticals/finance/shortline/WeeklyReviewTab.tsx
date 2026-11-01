@@ -166,7 +166,7 @@ export function WeeklyReviewView({ r, onChanged, myWeek, pick: pickProp, onPick 
   return (
     <div className="space-y-3">
       <Section icon={NotebookPen} title="AI 周报"
-        hint={`写 ${r.week_start} 起这一周(到 ${r.date} 为止):情绪走势、题材轮动、明日验证回看三段各看自己那几块数据、各用一个新对话写,最后汇总并写下周看什么。写完程序逐个核对数字和证据编号。同一周写的几版都存着;写一次要几分钟,可以切去别的页面。`}>
+        hint={`写 ${r.week_start} 起这一周(到 ${r.date} 为止):情绪走势、题材轮动、明日验证回看三段各看自己那几块数据、各用一个新对话写,最后汇总并写下周看什么。写完程序逐个核对数字和证据编号。同一周写的几版都存着;写一次要几分钟,可以切去别的页面。「提醒」页里的定时任务「AI 周报」(默认周五 19:10,可改可关)会在周五收盘后自动写一版;这一周已经有版本就不再写。`}>
         <div className="flex flex-wrap items-center gap-2">
           {running ? (
             <>

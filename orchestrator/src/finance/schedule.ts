@@ -1,8 +1,12 @@
 /**
  * 金融垂类的**定时任务**:按北京时间、只在 A 股交易日跑,结果进收件箱 / 推送(机制在 Core `notify.ts`)。
  *
- * 三个任务都**只报事实**:指数涨跌、涨停家数、资金流前几名、自选的涨跌和新公告标题、到期的判据和期间公告。
+ * 取数与对账那七个任务都**只报事实**:指数涨跌、涨停家数、资金流前几名、自选的涨跌和新公告标题、到期的判据和期间公告。
  * 🔴 不写「建议关注」「可以买」一类的话,不给评分 —— 推送是事实摘要 + 本机链接,判断留给用户回到页面上看。
+ *
+ * 另两个任务(`daily_review_ai` 18:55 / `weekly_ai_review` 周五 19:10)要调模型写复盘与周报:
+ * 它们**不改这条纪律**,只是把用户本来会手动点的那一次按钮挪到点,产出落到已有的台账(研究记录 / AI 周报台账)。
+ * 两者都设了 `timeoutMs` —— 一轮模型调用本身就比 Core 的 5 分钟任务上限长。
  *
  * 门判定:周末直接不跑(不联网);工作日查交易日历,`is_today_trading_day` 那条证据的日期必须就是今天,
  * 对不上或取不到一律 unavailable —— Core 会当天不跑并说明,不把「查不到」当成「开市」。
@@ -57,7 +61,7 @@ const yi = (yuan: number) => `${yuan > 0 ? "+" : ""}${(yuan / 1e8).toFixed(1)} �
 // ---------------------------------------------------------------- 门判定
 
 /** 计划时区下是星期几(0 = 周日) */
-function weekdayOf(now: Date): number {
+export function weekdayOf(now: Date): number {
   const w = new Intl.DateTimeFormat("en-US", { timeZone: SCHEDULE_TZ, weekday: "short" }).format(now);
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(w);
 }
@@ -345,6 +349,19 @@ export const FINANCE_SCHEDULE: ScheduleDef = {
       description: "收盘后把当天的超短线机会清单(含原始置信度、类别、情绪环境、修正因子归档)快照进台账,并对账已到期的:每只补次日涨跌 % 与是否再涨停。只列事实,不推送消息。快照与对账只认收盘定稿数据;同日重跑幂等。",
       // 动态导入:opportunity_track.ts 反过来要用本文件的 SCHEDULE_TZ / failedNote
       run: async (j) => (await import("./shortline/opportunity_track.ts")).opportunityTrackJob(j),
+    },
+    {
+      // 排在 18:35 / 18:45 之后:这一天该取的都取好了,再让模型写。19:10 的 AI 周报在它之后
+      id: "daily_review_ai", label: "Agent 复盘", at: "18:55", defaultEnabled: true, timeoutMs: 15 * 60_000,
+      description: "收盘后把「每日复盘」这一屏的数据整理成资料包,交给后台默认模型写一份复盘,存进「研究记录」(分类:复盘)——和页面上点「Agent 复盘」再点「存入沉淀」落的是同一张表。同一天已经有一篇就不再写;没接 AI 只说一句、不写。",
+      // 动态导入:market_review.ts 反过来要用本文件的 rowsOf
+      run: async (j) => (await import("./market_review.ts")).dailyReviewJob(j),
+    },
+    {
+      // 周五 19:10:等上面两个取数任务跑完、数据定稿之后,再把这一周写成周报
+      id: "weekly_ai_review", label: "AI 周报", at: "19:10", defaultEnabled: true, timeoutMs: 40 * 60_000,
+      description: "周五收盘后把这一周(周一起)的情绪走势、题材轮动、明日验证对账回看各写一段再汇总,存进台账(情绪复盘 · AI 周报)——和页面上点「开始写」得到的是同一版。同一天只在周五写;这一周已有版本就不再写;写完才报结果。",
+      run: async (j) => (await import("./shortline/weekly_job.ts")).weeklyReviewJob(j),
     },
   ],
 };
