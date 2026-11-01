@@ -103,6 +103,30 @@ export interface StockChips {
   note: string;
 }
 
+/**
+ * 杠杆资金(两融):full 层才有。
+ * 🔴 融资余额是**存量 + 慢变量**(借来的多头还剩多少),按交易日 T+1 披露,
+ *    不能拿来解释当天盘中的量价 —— 上屏只作旁证。
+ * 🔴 趋势看「5 日净买入占余额的百分比」,不看绝对额:15 亿对茅台是毛毛雨,对小票是天量。
+ */
+export interface StockLeverage {
+  as_of: string;
+  window: { from: string; to: string; n: number };
+  /** 融资余额(元) */
+  margin_balance: number | null;
+  /** 近 5 个交易日融资净买入累计(元) */
+  margin_net_buy_5d: number | null;
+  /** 5 日净买入占当前余额的百分比 */
+  net_buy_pct_5d: number | null;
+  /** 近 5 日里净买入为正的天数(0~5) */
+  net_buy_days_5d: number | null;
+  short_balance: number | null;
+  /** 融资余额占流通市值(%) */
+  balance_pct_cap: number | null;
+  trend: "加杠杆" | "去杠杆" | "基本持平" | "样本不足";
+  note: string;
+}
+
 /** 股东与事件:谁在买、谁可能要卖。full 层才有质押 / 解禁 / 大宗 / 增减持 */
 export interface StockHolders {
   as_of: string | null;
@@ -133,6 +157,8 @@ export interface StockAnalysisResult {
   valuation: StockValuation | null;
   chips: StockChips | null;
   holders: StockHolders | null;
+  /** 杠杆资金:full 层才有,basic 层为 null */
+  leverage: StockLeverage | null;
   /** 各域取数时刻里最早的那个:整份结论最早是这个时点的事实 */
   fetched_at: string;
   /** 有域读的是快照(不是这次真取的) */

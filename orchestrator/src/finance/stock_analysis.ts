@@ -8,7 +8,8 @@
  *   · `bs_valuation_history` 估值序列(PE_TTM / PB / PS / PCF,近 5 年)→ 现值取证据,分位取全表行
  *   · `bs_chip_distribution` 筹码分布(获利比例 / 平均成本 / 90% 成本区间 / 集中度)
  *   · `em_holder_num`       股东户数与环比(basic 层,便宜且信息量大)
- *   · 质押 / 解禁 / 大宗 / 增减持 只在 `depth=full` 取(单次 4~10 秒,跟着打开页面跑太慢)
+ *   · `em_margin_trading`   两融明细(融资余额 / 逐日净买入,30 个交易日)→ full 层的杠杆旁证
+ *   · 质押 / 解禁 / 大宗 / 增减持 / 两融 只在 `depth=full` 取(单次 4~10 秒,跟着打开页面跑太慢)
  * 🔴 代码**原样传**:个股 000001 就是平安银行;只有指数才带 sh/sz 前缀(见 registry notes)。
  *   给个股加 `sh` 前缀会取回上证指数,数字完全合理、看不出异常 —— 之前正是这么错的。
  * 🔴 取不到的数据如实写成 gaps,不当成 0、也不假装评分可信。**样本不够就不给阶段结论**,
@@ -91,7 +92,8 @@ export interface MoneyView {
   note: string;
 }
 
-/** 估值位置:贵不贵只能靠分位回答,现值本身没有参照物 */export interface ValuationView {
+/** 估值位置:贵不贵只能靠分位回答,现值本身没有参照物 */
+export interface ValuationView {
   /** 估值序列最后一天 */
   as_of: string;
   window: { from: string; to: string; n: number };
@@ -121,6 +123,33 @@ export interface ChipsView {
   price_ref: number | null;
   /** 现价相对平均成本(%):正=多数持仓浮盈 */
   above_avg_cost: number | null;
+  note: string;
+}
+
+/**
+ * 杠杆资金(两融):full 层才有(单次 7 秒)。
+ * 🔴 这是**存量 + 慢变量**:融资余额是「借来的多头仓位」还剩多少,不是当天买卖。
+ *    所以它只作旁证上屏,不参与阶段判定 —— 拿一个按日更新的余额去解释日内的量价,是拿错工具。
+ * 🔴 5 日变化**自己算**(逐日 RZJME 累加),不直接用上游的 `RZJME5D`:
+ *    那个字段实测与自算差 0,但把算法留在自己手里,口径变了能立刻发现而不是跟着漂。
+ * 🔴 看趋势用「占余额的百分比」而不是绝对额:15 亿对茅台是毛毛雨,对小票是天量。
+ */
+export interface LeverageView {
+  as_of: string;
+  window: { from: string; to: string; n: number };
+  /** 融资余额(元) */
+  margin_balance: number | null;
+  /** 近 5 个交易日融资净买入累计(元);正 = 加杠杆 */
+  margin_net_buy_5d: number | null;
+  /** 5 日净买入占当前余额的百分比;趋势按它判,不看绝对额 */
+  net_buy_pct_5d: number | null;
+  /** 近 5 日里净买入为正的天数(0~5) */
+  net_buy_days_5d: number | null;
+  /** 融券余额(元):看空那一边的存量 */
+  short_balance: number | null;
+  /** 融资余额占流通市值(%),上游 RZYEZB 直接给,已是百分数 */
+  balance_pct_cap: number | null;
+  trend: "加杠杆" | "去杠杆" | "基本持平" | "样本不足";
   note: string;
 }
 
@@ -157,6 +186,8 @@ export interface StockAnalysisResult {
   valuation: ValuationView | null;
   chips: ChipsView | null;
   holders: HoldersView | null;
+  /** 杠杆资金(full 层才有;basic 层为 null) */
+  leverage: LeverageView | null;
   /** 各域取数时刻里最早的那个:整份结论最早是这个时点的事实 */
   fetched_at: string;
   /** 是否有域读的是快照(不是这次真取的) */
@@ -165,7 +196,7 @@ export interface StockAnalysisResult {
   gaps: string[];
   /** 数据够不够支撑评分;false 时界面应弱化读数 */
   sufficient: boolean;
-  /** 这次跑到了哪一层:basic = 行情+日K+估值+筹码+户数;full = 再加质押/解禁/大宗/增减持 */
+  /** 这次跑到了哪一层:basic = 行情+日K+资金流+估值+筹码+户数;full = 再加质押/解禁/大宗/增减持+两融 */
   depth: "basic" | "full";
 }
 
@@ -194,6 +225,8 @@ const MAX_AGE = {
   holders: 6 * 3600_000,
   /** 质押 / 解禁 / 大宗 / 增减持按日或按周更新 */
   events: 6 * 3600_000,
+  /** 两融明细按交易日更新(T+1 披露) */
+  margin: 6 * 3600_000,
 } as const;
 
 /** 分位至少要这么多个交易日样本才给,少了就是拿几天的事当「历史」 */
@@ -253,18 +286,21 @@ async function fetchOne(
 
 /**
  * 取数器落盘的全表行(信封里只有最后一条的字段,序列要读落盘的原始文件)。
- * 🔴 两种落盘格式都要认:估值/筹码是 `raw/extracted_*.json`(`{rows:[...]}`),
- *    新浪资金流没有 extracted,直接是原始响应(顶层就是 `[...]`)。**只认 extracted 会静默返回空**,
- *    于是「序列明明取到了」却算出空分位 —— 正是 silent-data-traps 里那一类。
+ * 🔴 三种落盘格式都要认:
+ *    · 估值 / 筹码:`raw/extracted_*.json`(`{rows:[...]}`)
+ *    · 新浪资金流:原始响应,顶层就是 `[...]`
+ *    · 东财数据中心(两融):原始响应的 `result.data[...]`,字段还是大写(RZYE)
+ *    **只认 extracted 会静默返回空**,于是「序列明明取到了」却算出空 —— silent-data-traps 那一类。
+ *    extracted 优先(长表已规整),没有就退回原始响应。
  */
 function rawRows(ctx: ServiceContext, f: Fetched): Record<string, unknown>[] {
   const refs = evsOf(f.env).map((e) => str(e.raw_ref)).filter((x) => x.startsWith("raw/"));
-  // extracted 优先(长表已规整),没有就退回原始响应
   const ref = refs.find((x) => x.startsWith("raw/extracted_")) ?? refs[0];
   if (!ref) return [];
-  const doc = readRawDoc(ctx, f.outDir, ref);
+  const doc = readRawDoc(ctx, f.outDir, ref) as
+    { rows?: unknown; result?: { data?: unknown } } | unknown[] | null;
   if (Array.isArray(doc)) return doc as Record<string, unknown>[];
-  const rows = (doc as { rows?: unknown } | null)?.rows;
+  const rows = doc?.rows ?? doc?.result?.data;
   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
@@ -525,6 +561,50 @@ async function holdersOf(
   return out;
 }
 
+/**
+ * 杠杆资金:从两融明细的**完整表**算 5 日净买入与余额趋势。
+ * 🔴 一定要读 raw 完整表,不能拿信封里的 evidence 明细:那份明细只到 10-21,
+ *    而最新余额是 10-30 —— 首尾相减会跨掉 7 个交易日,算出一个谁也看不出来的错数。
+ * 🔴 东财字段全大写:`RZYE` 融资余额 / `RZJME` 当日融资净买入 / `RQYE` 融券余额 / `RZYEZB` 余额占流通市值%。
+ */
+async function leverageOf(ctx: ServiceContext, symbol: string, refresh: boolean, p: Probe): Promise<LeverageView | null> {
+  const f = await fetchOne(ctx, "em_margin_trading", symbol, undefined, refresh, MAX_AGE.margin, p, "两融明细");
+  if (!f) return null;
+  const pts = rawRows(ctx, f)
+    .map((r) => ({
+      date: str(r.DATE).slice(0, 10),
+      balance: numLoose(r.RZYE),
+      net: numLoose(r.RZJME),
+      short: numLoose(r.RQYE),
+      pctCap: numLoose(r.RZYEZB),
+    }))
+    .filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.date) && x.balance !== null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!pts.length) {
+    p.gaps.push("两融明细一行可用数据都没读到");
+    return null;
+  }
+  const last = pts[pts.length - 1]!;
+  const win5 = pts.length >= 5 ? pts.slice(-5) : null;
+  const net5 = win5 && win5.every((x) => x.net !== null) ? win5.reduce((a, b) => a + (b.net ?? 0), 0) : null;
+  const pct5 = net5 !== null && last.balance! > 0 ? (net5 / last.balance!) * 100 : null;
+  const days5 = win5 && win5.every((x) => x.net !== null) ? win5.filter((x) => (x.net ?? 0) > 0).length : null;
+  return {
+    as_of: last.date,
+    window: { from: pts[0]!.date, to: last.date, n: pts.length },
+    margin_balance: last.balance,
+    margin_net_buy_5d: net5,
+    net_buy_pct_5d: pct5 === null ? null : Math.round(pct5 * 100) / 100,
+    net_buy_days_5d: days5,
+    short_balance: last.short,
+    balance_pct_cap: last.pctCap,
+    // 1% 是个粗门槛:低于它就算「基本持平」,免得把噪声说成方向
+    trend: pct5 === null ? "样本不足" : pct5 > 1 ? "加杠杆" : pct5 < -1 ? "去杠杆" : "基本持平",
+    note: `东财两融明细(RZYE / RZJME),${pts.length} 个交易日;5 日净买入为逐日 RZJME 累加(自算,不取上游汇总字段)。`
+      + "融资余额是**存量**(借来的多头还剩多少),按交易日 T+1 披露,不解释当天盘中的量价。",
+  };
+}
+
 // ─── 规则引擎 ──────────────────────────────────────────────
 
 function sma(closes: number[], n: number): number | null {
@@ -706,13 +786,15 @@ export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: An
   const depth: "basic" | "full" = opts.depth === "full" ? "full" : "basic";
   const p = newProbe();
 
-  const [bars, quote, money, valuation, chips, holders] = await Promise.all([
+  const [bars, quote, money, valuation, chips, holders, leverage] = await Promise.all([
     klineOf(ctx, code, refresh, p),
     quoteOf(ctx, code, refresh, p),
     moneyOf(ctx, code, refresh, p),
     valuationOf(ctx, code, refresh, p),
     chipsOf(ctx, code, refresh, p),
     holdersOf(ctx, code, refresh, depth, p),
+    // 两融 7 秒:只在 full 层取,不跟着页面打开跑
+    depth === "full" ? leverageOf(ctx, code, refresh, p) : Promise.resolve(null),
   ]);
 
   const gaps = p.gaps;
@@ -757,6 +839,7 @@ export async function analyzeStock(ctx: ServiceContext, symbol: string, opts: An
     valuation,
     chips,
     holders,
+    leverage,
     fetched_at: p.at.filter(Boolean).sort()[0] ?? new Date().toISOString(),
     from_cache: p.cached.length > 0,
     gaps,

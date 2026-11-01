@@ -47,6 +47,12 @@ function yi(v: number | null): string {
   const a = Math.abs(v);
   return `${v < 0 ? "-" : "+"}${a >= 1e8 ? `${(a / 1e8).toFixed(2)} 亿` : `${(a / 1e4).toFixed(0)} 万`}`;
 }
+/** 元 → 「155.69 亿」/「1869 万」:**余额类**用它,不加正负号(存量不是增量) */
+function amt(v: number | null): string {
+  if (v === null) return "—";
+  const a = Math.abs(v);
+  return a >= 1e8 ? `${(a / 1e8).toFixed(2)} 亿` : `${(a / 1e4).toFixed(0)} 万`;
+}
 /** A 股习惯:净流入红、净流出绿(和涨跌幅一致) */
 const flowTone = (v: number | null): string => (v === null ? "" : v >= 0 ? "text-danger" : "text-success");
 
@@ -345,6 +351,21 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
                     : "—"}
                   hint={data.holders.holder_trade_latest?.date} />
                 <Note>大宗成交量按股、成交额按元(上游早期标成万股/万元,差 1e4,已修正并回归)。</Note>
+                {data.leverage && (
+                  <>
+                    <p className="mt-1 text-[10px] font-medium text-muted-foreground/80">杠杆资金（两融，截至 {data.leverage.as_of}）</p>
+                    <KV label="融资余额" value={amt(data.leverage.margin_balance)}
+                      hint={data.leverage.balance_pct_cap === null ? undefined
+                        : `占流通市值 ${data.leverage.balance_pct_cap.toFixed(2)}%`} />
+                    <KV label="近 5 日融资净买入" value={yi(data.leverage.margin_net_buy_5d)}
+                      tone={flowTone(data.leverage.margin_net_buy_5d)}
+                      hint={data.leverage.net_buy_days_5d === null
+                        ? data.leverage.trend
+                        : `${data.leverage.trend} · ${data.leverage.net_buy_days_5d}/5 天为正`} />
+                    <KV label="融券余额" value={amt(data.leverage.short_balance)} />
+                    <Note>{data.leverage.note}</Note>
+                  </>
+                )}
               </>
             ) : (
               <Note>质押 / 解禁 / 大宗 / 增减持按需取（点右上角「取更全」）,各自 4~10 秒。</Note>

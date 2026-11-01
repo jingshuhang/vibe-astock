@@ -44,6 +44,11 @@ rawarr=spec.get('raw_array')
 if rawarr is not None:
   ref='raw/%s_raw.json'%ep
   json.dump(rawarr,open(os.path.join(out,ref),'w',encoding='utf-8'))
+# 东财数据中心的信封:行在 result.data 里,字段大写(两融就是这种)
+rawd=spec.get('raw_dc')
+if rawd is not None:
+  ref='raw/%s_dc.json'%ep
+  json.dump({'success':True,'code':0,'result':{'data':rawd}},open(os.path.join(out,ref),'w',encoding='utf-8'))
 for e in spec.get('evidence',[]):
   row=dict(e)
   if ref: row['raw_ref']=ref
@@ -147,8 +152,29 @@ const BASE = (): Cfg => ({
   },
 });
 
+/** 30 天两融:最新余额 100 亿,最近 5 天各净买入 -2 亿(倒推出来的余额自洽) */
+const MARGIN_NET = (i: number) => (i >= 25 ? -2e8 : 1e8);
+const MARGIN_BAL: number[] = [];
+{
+  let b = 1e10;
+  for (let i = 29; i >= 0; i--) { MARGIN_BAL[i] = b; b -= MARGIN_NET(i); }
+}
+const MARGIN = Array.from({ length: 30 }, (_, i) => ({
+  DATE: `${iso(i)} 00:00:00`, SCODE: "600519", RZYE: MARGIN_BAL[i], RZJME: MARGIN_NET(i),
+  RQYE: 3e8, RZYEZB: 0.89,
+})).reverse();   // 东财给的是新→旧
+
 /** full 层才会取的那几个 */
 const EVENTS: Record<string, unknown> = {
+  em_margin_trading: {
+    raw_dc: MARGIN,
+    evidence: [
+      { id: "ev-g1", field: "margin_financing_balance_latest", value: 1e10, unit: "元", period: iso(29) },
+      { id: "ev-g2", field: "margin_financing_balance_points", value: 30, unit: "条", period: `${iso(0)}..${iso(29)}` },
+      // 信封里的明细只截到很早的一天:算 5 日必须读 raw 完整表,不能拿这些明细首尾相减
+      { id: "ev-g3", field: "margin_financing_balance", value: 1e10, unit: "元", period: iso(29), record_key: iso(29) },
+    ],
+  },
   equity_pledge: {
     evidence: [
       { id: "ev-p0", field: "pledge_snapshot_count", value: 609, unit: "期", period: "2014-03-07..2026-10-30" },
@@ -271,7 +297,7 @@ test("basic 层不去碰慢端点;full 层才取质押/解禁/大宗/增减持",
 
     const full = await analyzeStock(ctx, "600519", { depth: "full", refresh: true });
     assert.equal(full.depth, "full");
-    assert.equal(ctx.count(), 6 + 4 + 6, "full 再多取 4 个端点(另计那次 basic 的 6 次)");
+    assert.equal(ctx.count(), 6 + 5 + 6, "full 再多取 5 个端点(质押/解禁/大宗/增减持/两融;另计那次 basic 的 6 次)");
     const h = full.holders!;
     assert.equal(h.pledge_ratio, 0.07, "取最新一期质押比例");
     assert.equal(h.pledge_as_of, "2026-10-30");
@@ -368,4 +394,45 @@ test("资金同向:只把「吸筹」的置信度升一档;观望不会被资金
   assert.equal(split.stage, "主升");
   assert.equal(split.confidence, "低");
   assert.match(split.advice, /强度打折/);
+});
+
+test("杠杆资金:5 日净买入读完整表自算,趋势看占比不看绝对额", async () => {
+  const ctx = fakeCtx();
+  try {
+    ctx.setCfg({ endpoints: { ...BASE().endpoints, ...EVENTS } });
+    // basic 层不碰两融(7 秒)
+    assert.equal((await analyzeStock(ctx, "600519")).leverage, null, "basic 层不该取两融");
+
+    const lv = (await analyzeStock(ctx, "600519", { depth: "full", refresh: true })).leverage!;
+    assert.equal(lv.as_of, iso(29));
+    assert.equal(lv.window.n, 30);
+    assert.equal(lv.margin_balance, 1e10);
+    assert.equal(lv.margin_net_buy_5d, -1e9, "5 天各 -2 亿,逐日累加");
+    assert.equal(lv.net_buy_pct_5d, -10, "-10 亿 / 100 亿");
+    assert.equal(lv.net_buy_days_5d, 0);
+    assert.equal(lv.short_balance, 3e8);
+    assert.equal(lv.balance_pct_cap, 0.89, "上游 RZYEZB 已是百分数");
+    assert.equal(lv.trend, "去杠杆");
+    assert.match(lv.note, /存量/, "融资余额是存量,口径要说清");
+  } finally { ctx.cleanup(); }
+});
+
+test("杠杆资金样本不足:给「样本不足」,不说成「基本持平」也不给 0", async () => {
+  const ctx = fakeCtx();
+  try {
+    ctx.setCfg({
+      endpoints: {
+        ...BASE().endpoints, ...EVENTS,
+        em_margin_trading: {
+          raw_dc: MARGIN.slice(0, 3),
+          evidence: [{ id: "ev-g1", field: "margin_financing_balance_latest", value: 1e10, unit: "元", period: iso(29) }],
+        },
+      },
+    });
+    const lv = (await analyzeStock(ctx, "600519", { depth: "full", refresh: true })).leverage!;
+    assert.equal(lv.window.n, 3);
+    assert.equal(lv.margin_net_buy_5d, null, "不满 5 天就不给 5 日累计");
+    assert.equal(lv.net_buy_pct_5d, null);
+    assert.equal(lv.trend, "样本不足");
+  } finally { ctx.cleanup(); }
 });

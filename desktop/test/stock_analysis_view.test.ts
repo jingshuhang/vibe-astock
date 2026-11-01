@@ -62,6 +62,14 @@ const full = (over: Partial<StockAnalysisResult> = {}): StockAnalysisResult => (
     block_trade_count: 20, block_trade_latest: { date: "2026-10-29", premium_pct: -3.2, amount: 18685200 },
     holder_trade_latest: { date: "2025-12-30", direction: "增持", change_pct: 0.1 },
   },
+  leverage: {
+    as_of: "2026-10-30",
+    window: { from: "2026-09-11", to: "2026-10-30", n: 30 },
+    margin_balance: 15569141264, margin_net_buy_5d: -535473938, net_buy_pct_5d: -3.44,
+    net_buy_days_5d: 2, short_balance: 293093343.4, balance_pct_cap: 0.89,
+    trend: "去杠杆",
+    note: "东财两融明细(RZYE / RZJME),30 个交易日;融资余额是存量(借来的多头还剩多少),按交易日 T+1 披露。",
+  },
   fetched_at: "2026-11-01T15:03:00+08:00",
   from_cache: false,
   gaps: [],
@@ -82,6 +90,7 @@ const thin = (): StockAnalysisResult => full({
   quote: null,
   money: null,
   valuation: null,
+  leverage: null,
   chips: null,
   holders: null,
   sufficient: false,
@@ -114,6 +123,7 @@ test("字段对齐:前端读的每个字段后端都真的发(少一个就是永
     ["StockValuation", "ValuationView"],
     ["StockChips", "ChipsView"],
     ["StockHolders", "HoldersView"],
+    ["StockLeverage", "LeverageView"],
   ];
   for (const [f, b] of pairs) {
     assert.deepEqual(fields(front, f), fields(back, b), `${f} 与后端 ${b} 的字段必须一一对应`);
@@ -206,6 +216,20 @@ test("full 层:0 批解禁是确切结论,和「没取到」显示成两个样�
   }));
   assert.doesNotMatch(missing, /未来待解禁 0 批/, "没取到不能写成 0 批");
   assert.match(missing, /未来待解禁 —/);
+});
+
+test("杠杆资金:full 层才显示,余额不加正负号、趋势看占比", async () => {
+  const t = await render(full());
+  assert.match(t, /杠杆资金/);
+  assert.match(t, /融资余额 155\.69 亿/);
+  assert.match(t, /占流通市值 0\.89%/);
+  assert.match(t, /近 5 日融资净买入 -5\.35 亿/, "净买入是增量,带符号");
+  assert.match(t, /去杠杆 · 2\/5 天为正/);
+  assert.match(t, /融券余额 2\.93 亿/);
+
+  // basic 层不取两融,这一块整段不出现
+  const basic = await render(full({ depth: "basic", leverage: null }));
+  assert.doesNotMatch(basic, /杠杆资金|融资余额/);
 });
 
 test("读的是快照就要在页面上标明", async () => {
