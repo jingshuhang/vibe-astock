@@ -282,7 +282,8 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
                   hint={data.holders.lockup_window ?? undefined} />
                 <KV label="大宗交易" value={data.holders.block_trade_count === null ? "—" : `${data.holders.block_trade_count} 笔`}
                   hint={data.holders.block_trade_latest
-                    ? `${data.holders.block_trade_latest.date} 折价 ${pct(data.holders.block_trade_latest.premium_pct)}`
+                    // 用中性的「溢价率」:负数是折价、正数是溢价、0 就是按收盘价成交,别一律写成「折价」
+                    ? `${data.holders.block_trade_latest.date} 溢价率 ${pct(data.holders.block_trade_latest.premium_pct)}`
                     : undefined} />
                 <KV label="最近增减持"
                   value={data.holders.holder_trade_latest

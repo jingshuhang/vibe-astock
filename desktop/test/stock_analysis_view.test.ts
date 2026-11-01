@@ -169,7 +169,7 @@ test("full 层:0 批解禁是确切结论,和「没取到」显示成两个样�
   const ok = await render(full());
   assert.match(ok, /质押比例 0\.07%/);
   assert.match(ok, /未来待解禁 0 批/);
-  assert.match(ok, /折价 -3\.2%/);
+  assert.match(ok, /溢价率 -3\.2%/, "折价只是负溢价,标签要用中性的「溢价率」");
 
   const missing = await render(full({
     holders: { ...full().holders!, lockup_upcoming: null, lockup_window: null },
