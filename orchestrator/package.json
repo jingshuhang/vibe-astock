@@ -12,7 +12,10 @@
     "run": "node src/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "pretest": "node ../scripts/check-node.mjs",
-    "test": "node --test --experimental-test-coverage \"test/*.test.ts\""
+    "test": "node --test --experimental-test-coverage \"test/*.test.ts\"",
+    "test:delta": "node scripts/test-delta.mjs",
+    "test:baseline": "node scripts/test-delta.mjs --update-baseline",
+    "test:sweep": "node scripts/run-all-tests.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

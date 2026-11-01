@@ -28,7 +28,7 @@ export interface ShareCardResult {
   gaps: ShareGap[];
 }
 
-export const STATEMENT = "只汇总这次研究取到的公开数据和数量,不含报告里的判断,不评分,不构成投资建议;数据以交易所和公司公告为准。";
+export const STATEMENT = "汇总这次研究取到的公开数据和数量;数据以交易所和公司公告为准。";
 export const REPO_LINE = `由 ${PRODUCT_NAME} 生成 · github.com/${REPO_SLUG}`;
 export const GAP_POINTER = "原因见报告「数据缺口」一节";
 export const GAP_KIND_LABEL: Record<GapKind, string> = {

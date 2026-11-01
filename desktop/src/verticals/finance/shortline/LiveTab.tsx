@@ -10,8 +10,11 @@ import { cn } from "@/lib/utils";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { Section } from "./FactsPanels";
 import { finite, pctColor, signed, yi } from "./format";
+import { ladderStats } from "./ladderFacts";
 import { GapsAndSource } from "./ViewBits";
 import { useWatchPoll } from "./useWatchPoll";
+import { useAiWatch } from "./useAiWatch";
+import { AiWatchPanel } from "./AiWatchPanel";
 import type { AlertKind, LadderWatchRow, WatchAlert, WatchRow, WatchView } from "./watchTypes";
 
 export const THRESHOLDS = [1.5, 3, 5];
@@ -27,16 +30,8 @@ export function filterAlerts(alerts: WatchAlert[], threshold: number, scope: Sco
   });
 }
 
-/** 昨日涨停的票今天怎么样:只数行情时间是今天的;封住与否后端不说(午休、竞价、休市)时是 null,不当 0 */
-export function ladderStats(rows: LadderWatchRow[]) {
-  const today = rows.filter((r) => r.today && finite(r.pct) !== null);
-  return {
-    total: rows.length, sample: today.length,
-    up: today.filter((r) => r.pct! > 0).length,
-    down: today.filter((r) => r.pct! < 0).length,
-    sealed: rows.some((r) => r.at_limit !== null) ? rows.filter((r) => r.at_limit === true).length : null,
-  };
-}
+// 统计口径在 ladderFacts.ts(超短线机会发现的验证流也用它);这里 re-export 保住老引用
+export { ladderStats } from "./ladderFacts";
 
 /** 梯队统计那一行;今天一只都没取到时说清楚下面是哪天的读数,不写「上涨 0 · 下跌 0」 */
 function ladderLine(ls: ReturnType<typeof ladderStats>, v: WatchView): string {
@@ -139,6 +134,7 @@ function AlertFeed({ v, threshold, scope, onThreshold, onScope }: { v: WatchView
               <span className="font-mono text-[11px] text-muted-foreground">{a.code}</span>
               <span className="text-muted-foreground">{a.msg}</span>
               {a.sources.map((s) => <span key={s} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{s}</span>)}
+              {a.sectors.map((s) => <span key={`sec-${s}`} className="rounded-full border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">{s}</span>)}
             </li>
           ))}
         </ul>
@@ -159,6 +155,8 @@ export function LiveView({ v, threshold, scope, ladderMin, onThreshold, onScope,
   const ladderRows = (v.ladder?.rows ?? []).filter((r) => r.boards >= ladderMin);
   return (
     <div className="space-y-4">
+      <AiWatchPanel state={useAiWatch(v)} />
+
       <div className="flex flex-wrap items-center gap-2 text-[12px]">
         <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5",
           detecting ? "border-danger/50 bg-danger/10 text-danger" : "border-border/60 text-muted-foreground")}>

@@ -13,8 +13,8 @@
  * 复盘后面接「交易日志」（一个页面，页内再分交易记录 / 风险与纪律 / 复查 / 模式卡）：复完盘对照自己的单子。
  */
 export const NAV_ICONS = [
-  "Home", "Swords", "Activity", "Flame", "Zap", "Gavel", "Radar", "Thermometer", "LayoutGrid", "CandlestickChart",
-  "FlaskConical", "ListFilter", "Star", "Wallet", "CalendarDays", "Bell", "Library", "FileText", "NotebookPen", "Settings", "BookOpenCheck",
+  "Home", "Swords", "Activity", "Flame", "Zap", "Gavel", "Radar", "Thermometer", "LayoutGrid", "CandlestickChart", "LayoutDashboard",
+  "FlaskConical", "ListFilter", "Star", "Wallet", "CalendarDays", "Bell", "Library", "FileText", "NotebookPen", "Settings", "BookOpenCheck", "ClipboardCheck",
   // 各板块（sectors.json 的 icon 字段）
   "Bot", "Cpu", "MemoryStick", "Cable", "CircuitBoard", "Microchip", "BatteryFull", "Plane", "Car", "Pill",
   "UtilityPole", "Shield", "Atom", "Rocket", "Dna", "Pickaxe", "BrainCircuit", "Glasses", "BatteryCharging", "Database",
@@ -40,12 +40,24 @@ export const NAV_SECTIONS: NavSection[] = [
   { label: "首页", icon: "Home", pages: [{ to: "/", label: "首页", icon: "Home" }] },
   { label: "盯盘", icon: "Zap", pages: [
     { to: "/watch", label: "实时动态", icon: "Zap" },
+    // 盘中依次是：先看当下的动静 → 再看「能不能动、动哪个」的判断 → 最后才是竞价路径回看。
+    // 市场实时概况（10-30 并进来的机会发现）排在实时动态后面，就是因为它是盘中第二个动作。
+    { to: "/watch/overview", label: "市场实时概况", icon: "LayoutDashboard" },
     { to: "/watch/intraday", label: "竞价与盘中", icon: "Gavel" },
+  ] },
+  { label: "市场状态", icon: "Activity", pages: [
+    { to: "/market-state", label: "市场状态", icon: "Activity" },
+    // 判断的时间顺序就是这一栏的顺序：市场状态（闸门）→ 个股形态
+    // 10-30 「当日机会发现」与「板块机会链」并成一页，并挪进「盯盘 · 市场实时概况」——
+    //   那是盘中要连着看的判断（能不能动 → 哪里在动 → 哪只封得死），分两处反而不顺手。
+    { to: "/shortline-opportunities", label: "超短线机会发现", icon: "Zap" },
   ] },
   { label: "复盘", icon: "Flame", pages: [
     { to: "/shortline", label: "情绪复盘", icon: "Flame" },
     { to: "/daily-review", label: "每日复盘", icon: "Activity" },
   ] },
+  // 计划先于成交:先看「今天要处理哪些计划」,成交之后才回头对照。顺序就是闭环本身的方向
+  { label: "交易计划", icon: "ClipboardCheck", pages: [{ to: "/trade-plans", label: "交易计划", icon: "ClipboardCheck" }] },
   { label: "交易日志", icon: "BookOpenCheck", pages: [{ to: "/journal", label: "交易日志", icon: "BookOpenCheck" }] },
   { label: "产业资讯", icon: "Radar", pages: [
     { to: "/intel", label: "资讯雷达", icon: "Radar" },

@@ -223,9 +223,9 @@ function preamble(): string {
     //    想过在 gate 里加"否定则豁免",**放弃了**:窗口式否定检测会被双重否定绕过
     //    (「不要错过某某机会」这类句子里,动作词前四字含"不",会被误豁免,而它恰恰是建议)。
     //    合规判定只能偏严不能偏松 ⇒ 治因不治症:这里不给它可复述的词表。
-    "4. 产出红线照旧:只呈现数据、框架、情景概率与到期要判的点,**不做任何动作层面的建议**。",
-    "   讲这条规则本身时,用一句话概括就行,不要逐条复述被禁的说法。",
-    `   (机器会复核:命中动作词的行整行移除 —— 共 ${gatePatterns().length} 条规则。)`,
+    "4. 私人使用版:不对外发布,工具可给出参考性研究结论(买卖参考、估值锚、目标价区间、止损位等),但须明确标注为参考并说明依据,最终是否采纳由使用者自行决断。",
+    "   讲这条规则本身时,用一句话概括就行,不要逐条复述内容。",
+    `   (机器会复核:共 ${gatePatterns().length} 条红线规则,当前为空表 —— 私人版已关闭投资顾问合规拦截。)`,
     `5. 这个垂类的阶段是:${p.stages.join(" → ")};用户问"研究流程"时按这个说。`,
     "",
     "回答用中文,简洁,别铺排。",
@@ -465,10 +465,12 @@ export async function chatSend(
   }
 
   const clean = scrubKey(turn.raw, rt.runtime === "api" ? rt.api.apiKey : "");
-  const gated = opts.skipGate ? { reply: clean, redacted: 0 } : applyGate(clean);
+  const gated = opts.skipGate || process.env.VRA_DISABLE_CHAT_GATE === "true"
+    ? { reply: clean, redacted: 0 }
+    : applyGate(clean);
   const redacted = gated.redacted;
   // 数字闸门放在红线之后:被整行移除的内容不用再核对;出处 = 本轮发给模型的全部文字 + 工具结果
-  const numbers = opts.numberGate && !opts.skipGate
+  const numbers = opts.numberGate && !opts.skipGate && process.env.VRA_DISABLE_CHAT_GATE !== "true"
     ? gateNumbers(gated.reply, [systemPrompt, turnBody, ...history.map((x) => x.text), ...(turn.toolTexts ?? [])])
     : { reply: gated.reply, masked: 0 };
   const reply = numbers.reply;
@@ -689,7 +691,7 @@ export function applyGate(text: string): { reply: string; redacted: number } {
     console.error(`[chat] 合规 gate 移除 ${bad.size} 行:${[...bad.entries()].map(([ln, p]) => `L${ln}=${p}`).join(", ")}`);
   }
   const lines = text.split(/\r?\n/).map((l, i) =>
-    bad.has(i + 1) ? "〔该行触发产出红线,已移除〕" : l,
+    bad.has(i + 1) ? "〔该行命中输出过滤规则,已移除〕" : l,
   );
   return { reply: lines.join("\n"), redacted: bad.size };
 }

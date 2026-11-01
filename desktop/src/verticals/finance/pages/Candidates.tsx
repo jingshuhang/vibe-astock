@@ -96,7 +96,7 @@ export function Candidates() {
 
   return <div>
     <PageHeader title="候选池"
-      subtitle="在自选、持仓或某个指数的成分股里,按你设的条件逐只核对:每一条都写明满足、不满足还是缺数据。只排除、不排名,不打分、不给买卖建议。"
+      subtitle="在自选、持仓或某个指数的成分股里,按你设的条件逐只核对:每一条都写明满足、不满足还是缺数据。只排除、不排名,不打分。"
       actions={data ? <button type="button" onClick={() => void run(true)} disabled={loading} className={BTN}><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />{loading ? "取数中…" : "重新取行情"}</button> : undefined} />
 
     <GlassCard className="mb-5">

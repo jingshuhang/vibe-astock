@@ -7,6 +7,7 @@ import { chatStream } from "../src/verticals/finance/lib/llm.ts";
 import { backend } from "../src/verticals/finance/lib/backend.ts";
 import { TIER_PROMPT_RULES, tiersSummary } from "../src/verticals/finance/lib/reviewTiers.ts";
 import { parseReview, reviewLines } from "../src/verticals/finance/lib/marketReview.ts";
+import { METRIC_LABEL, OP_LABEL, readingsText } from "../src/verticals/finance/lib/marketCall.ts";
 
 test("全球指数失败进入可见状态与 AI 摘要，不静默消失", async () => {
   const text = fs.readFileSync(new URL("../src/verticals/finance/pages/DailyReview.tsx", import.meta.url), "utf8");
@@ -53,6 +54,8 @@ test("全球指数失败进入可见状态与 AI 摘要，不静默消失", asyn
   const summaryCtx = {
     pageMeta: null, globalIdx: [], globalErr, globalDone, dataReady: true, ovDone: true, pageErr: null,
     ctx: undefined, R: parseReview(null), reviewLines, bizDay: null, tiers: null, tiersErr: "", tiersSummary,
+    // 当日全景判断(交叉验证):默认没取到 —— 缺口文案要出现,不能留空
+    callRow: null, callDone: true, callErr: null, readingsText, METRIC_LABEL, OP_LABEL,
   };
   const summary = vm.runInNewContext(compile("dataSummary"), summaryCtx);
   assert.match(summary, /【海外指数】.*未接入/);
@@ -73,7 +76,69 @@ test("全球指数失败进入可见状态与 AI 摘要，不静默消失", asyn
   assert.match(s2, /【缺口】两融余额 这次没取到/);
   assert.match(s2, /【备用来源·板块资金】东财没取到,换新浪/);
   assert.match(s2, /【读法·板块资金】净额口径/);
+  // 当日全景判断:业务日没有对应记录时明说「没有」,不拿最近一条冒充
+  assert.match(s2, /【当日全景判断】2026-10-08 没有对应的全景判断记录/);
   assert.doesNotMatch(text, /\{globalIdx\.length > 0 &&\s*\(/, "面板不再以有数据为显示前提；状态标签仍可以检查数据是否为空");
+});
+
+test("当日全景判断进 AI 上下文:带读数与来源做交叉验证;缺口与「没有记录」各自明说", () => {
+  const text = fs.readFileSync(new URL("../src/verticals/finance/pages/DailyReview.tsx", import.meta.url), "utf8");
+  const source = ts.createSourceFile("DailyReview.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const expressions = new Map<string, ts.Expression>();
+  function visit(n: ts.Node): void {
+    if (ts.isVariableDeclaration(n) && n.initializer) expressions.set(n.name.getText(source), n.initializer);
+    ts.forEachChild(n, visit);
+  }
+  visit(source);
+  const compile = (name: string) => ts.transpileModule(`(${expressions.get(name)!.getText(source)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const base = {
+    pageMeta: null, globalIdx: [], globalErr: null, globalDone: true, dataReady: true, ovDone: true, pageErr: null,
+    ctx: undefined, R: parseReview(null), reviewLines, tiers: null, tiersErr: "", tiersSummary,
+    readingsText, METRIC_LABEL, OP_LABEL,
+  };
+  const callRow = {
+    date: "2026-10-30", call: "减仓", direction: "偏空",
+    basis: "广度16%+破3600+主力−352亿", trigger: "站回3660转持有",
+    trigger_metric: null, trigger_op: null, trigger_value: null,
+    breadth_pct: 16.0, amount_yi: 16744.63, limit_up: 49, limit_down: 93,
+    settled: false, settled_date: null,
+    next_breadth_pct: null, next_amount_yi: null, next_limit_up_count: null, next_limit_down_count: null,
+    trigger_hit: null, html_path: "C:\\Users\\51092\\Desktop\\A股大盘全景-2026-10-30.html",
+    source: "inbox",
+  };
+  // 有当天判断:四档 + 依据 + 触发原文 + 读数 + 来源状态,并声明只作交叉验证
+  const with1030 = vm.runInNewContext(compile("dataSummary"), {
+    ...base, bizDay: "2026-10-30", callRow, callDone: true, callErr: null,
+  });
+  assert.match(with1030, /【当日全景判断·交叉验证】2026-10-30/);
+  assert.match(with1030, /减仓·偏空/);
+  assert.match(with1030, /广度16%\+破3600\+主力−352亿/);
+  assert.match(with1030, /站回3660转持有/);
+  assert.match(with1030, /广度 16%/);
+  assert.match(with1030, /额 16744\.63 亿/);
+  assert.match(with1030, /涨停 49 \/ 跌 93/);
+  assert.match(with1030, /inbox 还没落账/);
+  assert.match(with1030, /只作交叉验证对照,不构成投资建议/);
+  assert.match(with1030, /指出分歧/);
+  // 结构化触发条件在时,给比较符 + 阈值
+  const structured = vm.runInNewContext(compile("dataSummary"), {
+    ...base, bizDay: "2026-10-30", callDone: true, callErr: null,
+    callRow: { ...callRow, trigger: "广度破 45 转减仓", trigger_metric: "breadth_pct", trigger_op: "below", trigger_value: 45 },
+  });
+  assert.match(structured, /广度 ≤ 45/);
+  // 取数失败:写缺口,并说清「不要假定今天没有判断」
+  const failed = vm.runInNewContext(compile("dataSummary"), {
+    ...base, bizDay: "2026-10-30", callRow: null, callDone: true, callErr: "connect ECONNREFUSED",
+  });
+  assert.match(failed, /【缺口·当日全景判断】没取到\(connect ECONNREFUSED\)/);
+  assert.match(failed, /不要假定「今天没有判断」/);
+  // 还在加载:既不写有也不写没有
+  const loading = vm.runInNewContext(compile("dataSummary"), {
+    ...base, bizDay: "2026-10-30", callRow: null, callDone: false, callErr: null,
+  });
+  assert.doesNotMatch(loading, /当日全景判断/);
 });
 
 test("复盘按钮通过真实 chatStream 发出一次页面数据，并保留业务日、缺口与读法", async () => {

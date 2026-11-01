@@ -65,7 +65,7 @@ export const pollMsOf = (p: Phase, tradingDay: boolean | null) =>
 // ---------------------------------------------------------------- 异动判断(纯计算)
 
 export type AlertKind = "急拉" | "急跌" | "封板" | "开板";
-export interface Alert { ts: string; code: string; name: string; kind: AlertKind; change_pct: number | null; price: number | null; pct: number | null; msg: string; sources: string[] }
+export interface Alert { ts: string; code: string; name: string; kind: AlertKind; change_pct: number | null; price: number | null; pct: number | null; msg: string; sources: string[]; /** 真实行业板块(东财行业),只从梯队带下来;其余票留空 */ sectors: string[] }
 export interface Frame { t: number; price: number }
 export interface DetectState { frames: Map<string, Frame[]>; limit: Map<string, boolean>; cooldown: Map<string, number> }
 export const newDetectState = (): DetectState => ({ frames: new Map(), limit: new Map(), cooldown: new Map() });
@@ -79,7 +79,7 @@ export function detect(st: DetectState, code: string, q: { name: string; price: 
     const k = `${code}|${kind}`;
     if (t - (st.cooldown.get(k) ?? -Infinity) < COOLDOWN_MS) return;
     st.cooldown.set(k, t);
-    out.push({ ts, code, name: q.name, kind, change_pct: change === null ? null : roundTo(change, 2), price: q.price, pct: q.pct, msg, sources });
+    out.push({ ts, code, name: q.name, kind, change_pct: change === null ? null : roundTo(change, 2), price: q.price, pct: q.pct, msg, sources, sectors: [] });
   };
   const frames = st.frames.get(code) ?? [];
   frames.push({ t, price: q.price });
@@ -268,7 +268,7 @@ export function loadAlerts(dataRoot: string, day: string): Alert[] {
     if (!line.trim()) continue;
     try {
       const a = JSON.parse(line) as Alert;
-      if (typeof a.ts === "string" && A_SHARE.test(a.code) && KINDS.includes(a.kind) && typeof a.msg === "string" && Array.isArray(a.sources)) out.push(a);
+      if (typeof a.ts === "string" && A_SHARE.test(a.code) && KINDS.includes(a.kind) && typeof a.msg === "string" && Array.isArray(a.sources)) out.push({ ...a, sectors: Array.isArray(a.sectors) ? a.sectors : [] });
     } catch { /* 坏行跳过 */ }
   }
   return out.reverse().slice(0, ALERTS_KEEP);
@@ -372,6 +372,14 @@ async function pollOnce(ctx: ServiceContext, st: State, signal: AbortSignal, dep
   }
   const lists = st.lists;
   const tags = sourcesOf(lists);
+  // 真实行业板块(东财行业):只有梯队里的票才有;持仓 / 自选 / 大票 / 成交额前十本次不取行业,留空
+  const sectorByCode = new Map<string, string[]>();
+  for (const s of lists.ladder?.stocks ?? []) {
+    if (!s.sector) continue;
+    const cur = sectorByCode.get(s.code);
+    if (!cur) sectorByCode.set(s.code, [s.sector]);
+    else if (!cur.includes(s.sector)) cur.push(s.sector);
+  }
   const bigSet = new Set((lists.bigcaps?.stocks ?? []).map((s) => s.code));
   // 大票只在名单里挂「大票」一个标签的 30 秒取一次;同时是持仓 / 自选 / 梯队的,跟着重点名单每次取
   const focus = [...tags.keys()].filter((c) => !bigSet.has(c) || tags.get(c)!.length > 1);
@@ -400,9 +408,11 @@ async function pollOnce(ctx: ServiceContext, st: State, signal: AbortSignal, dep
         fresh.push(...detect(st.detect, c, { name: q.name || c, price: q.price, pct: q.pct, limit_up: q.limit_up }, nowMs, hms, tags.get(c) ?? []));
       }
       if (fresh.length) {
-        const err = appendAlerts(ctx.dataRoot, day, fresh);
+        // 把真实行业板块接进每条异动(sectorByCode 仅有梯队票的行业;其余留空)
+        const tagged = fresh.map((a) => (a.sectors.length ? a : { ...a, sectors: sectorByCode.get(a.code) ?? [] }));
+        const err = appendAlerts(ctx.dataRoot, day, tagged);
         if (err) notes.push(err);
-        st.alerts = [...fresh.reverse(), ...st.alerts].slice(0, ALERTS_KEEP);
+        st.alerts = [...tagged.reverse(), ...st.alerts].slice(0, ALERTS_KEEP);
       }
     }
   }

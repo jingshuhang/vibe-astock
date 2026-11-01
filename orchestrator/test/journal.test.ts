@@ -12,7 +12,7 @@ import { replayTrades, tradeOf, type Trade } from "../src/finance/holdings.ts";
 import { T0_WARNING, buildEpisodes } from "../src/finance/journal/episodes.ts";
 import { DEFAULT_FEES, estimateFee } from "../src/finance/journal/fees.ts";
 import { mean, median, pyRound, sum } from "../src/finance/journal/num.ts";
-import { buildRows, type JournalRow, type Tag } from "../src/finance/journal/rows.ts";
+import { buildRows, plannedLevelsFrom, type JournalRow, type PlanLinks, type Tag } from "../src/finance/journal/rows.ts";
 import { bucketStats, journalStats } from "../src/finance/journal/stats.ts";
 import { journalAct, journalView, type JournalView } from "../src/finance/journal/view.ts";
 
@@ -197,7 +197,7 @@ test("不参与计算的流水和持仓页同一个判断;港美股不进交易�
 });
 
 const tag = (f: Partial<Tag>): Tag => ({
-  id: `g${(n += 1)}`, symbol: "600519", name: "", trade_id: "", date: "", playbook: null, as_planned: null,
+  id: `g${(n += 1)}`, symbol: "600519", name: "", trade_id: "", date: "", playbook: null, as_planned: null, plan_id: null,
   planned_stop: null, planned_target: null, pnl_pct: null, note: "", planned_at: "", migrated_from: "",
   created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", ...f,
 });
@@ -332,7 +332,12 @@ test("记一笔:成交整批写进交易流水并写标注;算不了的一条都
   if (v.at_risk.available) assert.deepEqual([v.at_risk.positions[0]!.shares, v.at_risk.positions[0]!.at_risk, v.at_risk.total_at_risk], [600, 300, 300]);
   assert.ok(v.risk.equity.available && v.risk.equity.trades === 1);
   assert.equal(v.risk.violations.available && v.risk.violations.rule_status.max_loss_per_day_pct, "unavailable:没填账户规模,单日亏损占比没有分母");
-  assert.ok(v.inbox.available && v.inbox.count === 0);
+  // 「按计划 / 计划外」改由计划关联推导(见 rows.ts plannedFrom):没挂计划的交易一律记计划外。
+  // 给这一轮写一条计划再重取视图 —— 既让收件箱回到 0 条,也顺带验证关联真的生效。
+  ledgerUpsert(ctx, { kind: "trade_plan", record: { symbol: "600519", thesis: "首板", round_ref: res.trade_ids[0] } });
+  const v2 = (await view(ctx)) as Avail;
+  assert.equal(v2.rows[0]!.as_planned, true, "关联到计划 → 按计划");
+  assert.ok(v2.inbox.available && v2.inbox.count === 0);
 
   // 卖超:一条都不写
   await assert.rejects(act(ctx, { action: "record", symbol: "600519", fills: [{ type: "sell", date: "2026-10-10", shares: 5000, price: 11 }] }), bad(/算不了.*超过当时持有/));
@@ -353,6 +358,55 @@ test("记一笔:成交整批写进交易流水并写标注;算不了的一条都
   assert.equal(ledgerList(ctx, "trade").trade!.length, 4);
   assert.equal(ledgerList(ctx, "journal_tag").journal_tag!.length, 1);
 }));
+
+/**
+ * 计划里写的止损要真的落到交易日志那一行上。
+ * 只判「有没有挂计划」是不够的:挂上了却仍报「没写计划止损」,等于告诉用户一件假事 ——
+ * 明明写了。在险资金也因此少算一笔。
+ *
+ * `created_at` 只能由台账按当前时间给,所以「买入前写下 → 不算事后」这条走纯函数单测(见下)。
+ */
+test("计划写了止损:挂上那一轮后,日志行拿到的是计划的止损,收件箱不再报「没写」", withRoot(async (ctx) => {
+  const b = ledgerUpsert(ctx, { kind: "trade", record: { symbol: "600519", type: "buy", date: "2026-09-01", shares: 100, price: 10, fee: 5 } });
+  const before = (await view(ctx)) as Avail;
+  const r0 = before.rows[0]!;
+  assert.equal(r0.as_planned, false, "没挂计划 → 计划外");
+  assert.equal(r0.planned_stop, null);
+  assert.ok(before.inbox.available && before.inbox.items.some((i) => i.flags.some((f) => f.key === "no_stop")));
+
+  ledgerUpsert(ctx, {
+    kind: "trade_plan",
+    record: { symbol: "600519", thesis: "回踩不破", planned_stop: 9, planned_target: 12, round_ref: b.id },
+  });
+  const after = (await view(ctx)) as Avail;
+  const r1 = after.rows[0]!;
+  assert.equal(r1.as_planned, true, "挂上计划 → 按计划");
+  assert.equal(r1.planned_stop, 9, "止损来自计划,不是来自标注(标注没写)");
+  assert.equal(r1.planned_target, 12);
+  assert.ok(after.inbox.available && !after.inbox.items.some((i) => i.flags.some((f) => f.key === "no_stop")), "计划里写了止损,不该再报没写");
+  // 计划是买入之后才补写的(台账 created_at 取当前时间)→ 标出来;在险资金照样算
+  assert.equal(r1.plan_late, true);
+  assert.ok(after.at_risk.available && after.at_risk.total_at_risk === 100, "成本 10、止损 9、100 股 → 在险 100");
+}));
+
+test("计划止损/目标从哪来:计划优先,计划没写退回标注;时间判「事后补的」", () => {
+  const links: PlanLinks = {
+    rounds: new Set(["e1"]), planIds: new Set(["p1"]),
+    byRound: new Map([["e1", { planned_stop: 9, planned_target: 12, created_at: "2026-08-31T10:00:00.000Z", updated_at: "2026-09-02T10:00:00.000Z" }]]),
+  };
+  const t = (f: Partial<Tag>) => tag({ trade_id: "e1", ...f });
+  // 计划是 8/31 写下的,买入在 9/1 → 不算事后
+  assert.deepEqual(plannedLevelsFrom(links, "e1", null, "2026-09-01"), { stop: 9, target: 12, late: false });
+  // 计划压过标注里写的(标注那个是事后补的,计划这个才是买入前的)
+  assert.deepEqual(plannedLevelsFrom(links, "e1", t({ planned_stop: 8.5, planned_at: "2026-09-05T10:00:00.000Z" }), "2026-09-01"), { stop: 9, target: 12, late: false });
+  // 这一轮没被认领 → 退回标注自己的,按 planned_at 判
+  assert.deepEqual(plannedLevelsFrom(links, "e2", t({ planned_stop: 8.5, planned_at: "2026-09-05T10:00:00.000Z" }), "2026-09-01"), { stop: 8.5, target: null, late: true });
+  // 计划没写止损(只写了目标)→ 止损退回标注
+  const bare: PlanLinks = { ...links, byRound: new Map([["e1", { planned_stop: null, planned_target: 12, created_at: "2026-08-31T10:00:00.000Z", updated_at: "" }]]) };
+  assert.deepEqual(plannedLevelsFrom(bare, "e1", t({ planned_stop: 8.5, planned_at: "2026-08-20T10:00:00.000Z" }), "2026-09-01"), { stop: 8.5, target: 12, late: false });
+  // 都没写 → 不指控
+  assert.deepEqual(plannedLevelsFrom(links, "e2", null, "2026-09-01"), { stop: null, target: null, late: false });
+});
 
 test("标注:有就改;只改备注不重盖标注时间;改了止损重盖", withRoot(async (ctx) => {
   const b = ledgerUpsert(ctx, { kind: "trade", record: { symbol: "600519", type: "buy", date: "2026-10-08", shares: 100, price: 10, fee: 5 } });

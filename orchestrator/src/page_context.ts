@@ -20,7 +20,13 @@ export const MAX_WITH_PAGE = 64_000;
 /** 对话消息的长度检查:Agent、本机订阅单轮、模型直连三条路径共用;没问题返回 null */
 export function chatLengthProblem(raw: string): string | null {
   if (!raw.trim()) return "消息不能为空";
-  const { question } = splitPageContext(raw);
+  const { question, context } = splitPageContext(raw);
+  // 没有「【问题】」/ 控制台前缀分隔的裸消息(如 AI 盯盘把整页异动数据整条发来的自动化请求):
+  // 4000 只是用户在界面手打问题的约束(界面已挡),这类请求没有手打部分,只卡资源上限 MAX_WITH_PAGE。
+  if (!context.trim()) {
+    if (raw.length > MAX_WITH_PAGE) return `这一页的数据连同问题超过 ${MAX_WITH_PAGE} 字符，没有发出`;
+    return null;
+  }
   if (!question.trim() || question.length > MAX_QUESTION) return `问题须为 1–${MAX_QUESTION} 字符`;
   if (raw.length > MAX_WITH_PAGE) return `这一页的数据连同问题超过 ${MAX_WITH_PAGE} 字符，没有发出`;
   return null;

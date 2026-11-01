@@ -11,9 +11,12 @@ import { Caliber } from "./Caliber";
 import { countColor, coverageNote, finite, hhmm, pctColor, plain, rate, ratioOf, safeArray, safeRecord, signed, strengthColor, tierOrder } from "./format";
 import type { BoardStat, ByBoard, EventLedger, FeedbackCell, FeedbackDetail, FeedbackMatrix, LedgerEvent, LossEffect, SealQuality, ThemeNode, ThemeRow, ThemeStructure, ThemeTree } from "./types";
 
-export function Section({ icon: Icon, title, hint, caliber, available, reason, children }: {
+export function Section({ icon: Icon, title, hint, caliber, available, reason, tag, children }: {
   icon: LucideIcon; title: string; hint?: string; caliber?: string;
-  available?: boolean; reason?: string; children: ReactNode;
+  available?: boolean; reason?: string;
+  /** 标题行右侧的结论标签（一句「所以呢」），没有就不占位 */
+  tag?: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div className="glass p-4">
@@ -21,6 +24,7 @@ export function Section({ icon: Icon, title, hint, caliber, available, reason, c
         <Icon className="h-4 w-4 text-primary" />
         <h3 className="text-sm font-semibold">{title}</h3>
         {caliber && <Caliber text={caliber} />}
+        {tag && <div className="ml-auto">{tag}</div>}
       </div>
       {hint && <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
       {available === false

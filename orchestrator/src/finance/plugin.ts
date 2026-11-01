@@ -386,7 +386,7 @@ export const FINANCE_PLUGIN: Plugin = {
     intro: `${PRODUCT_NAME}（VA）是以 A 股短线复盘与盯盘为主的投研工作台，也能研究美股、港股。`,
     researchScope: "支持 A 股 6 位代码(market 可不传)、港股 5 位代码(market=HK)、美股代码(market=US);港股 / 美股必须传 market",
     dataSizes: "单只股票的行情、档案几 KB;全市场榜单(涨停池、龙虎榜、行业对比、批量行情)100–200 KB;板块资金流接近 1 MB。",
-    boundaries: `${PRODUCT_NAME} 不给买卖建议、目标价或评级。`,
+    boundaries: `${PRODUCT_NAME} 提供研究结论(买卖参考、估值锚、目标价区间、止损位等),须明确标注为参考;是否采纳由使用者自行决断。`,
   },
   lexicon: FINANCE_LEXICON,
 };

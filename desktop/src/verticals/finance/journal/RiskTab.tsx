@@ -1,4 +1,4 @@
-/** 交易日志 · 风险与纪律:在险资金、权益曲线、最近状态、纪律值多少钱、自己的规矩。只统计自己的交易,不给操作建议 */
+/** 交易日志 · 风险与纪律:在险资金、权益曲线、最近状态、纪律值多少钱、自己的规矩。只统计自己的交易 */
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { hideIf } from "@/lib/privacy";

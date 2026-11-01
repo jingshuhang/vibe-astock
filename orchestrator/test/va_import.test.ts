@@ -136,14 +136,17 @@ test("导入:写进新版各处、先备份;交易日志按轮拆开、标注挂
   assert.deepEqual(v.orphans, []);
   assert.deepEqual(v.conflicts, []);
   const rows = v.rows.map((x) => [x.symbol, x.kind, x.date, x.playbook, x.as_planned, x.planned_stop, x.planned_target, x.plan_late]).sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[2]).localeCompare(String(b[2])));
+  // 「按计划」改由计划关联推导(见 rows.ts plannedFrom):旧版没有「交易计划」这个概念,
+  // 导进来的每一轮都不可能挂着计划 ⇒ 一律记计划外。原来那两个 true 是旧版标注里勾的布尔,现在不作数了。
+  // 关联本身生效与否由 journal.test.ts「记一笔」那条用例专门覆盖,这里只验导入时各字段照原样落位。
   assert.deepEqual(rows, [
     ["000001", "manual", "2026-09-02", "低吸", false, null, null, false],
-    ["002463", "episode", "2026-09-08", "半路", null, null, null, false],
-    ["002463", "episode", "2026-09-08", "半路", null, null, null, false],
+    ["002463", "episode", "2026-09-08", "半路", false, null, null, false],
+    ["002463", "episode", "2026-09-08", "半路", false, null, null, false],
     // 第一轮带计划止损目标;止损是后来改过的(旧版留了改动时间)→ 标「事后写的」;第二轮不带
-    ["300750", "episode", "2026-09-02", "接力", null, null, null, false],
-    ["600519", "episode", "2026-09-01", "打板", true, 9.6, 12, true],
-    ["600519", "episode", "2026-09-07", "打板", true, null, null, false],
+    ["300750", "episode", "2026-09-02", "接力", false, null, null, false],
+    ["600519", "episode", "2026-09-01", "打板", false, 9.6, 12, true],
+    ["600519", "episode", "2026-09-07", "打板", false, null, null, false],
   ]);
   assert.equal(v.rows.find((x) => x.symbol === "000001")!.pnl_pct, 3.5);
   // 设置:费率、风险规矩、账户规模

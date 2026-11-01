@@ -65,6 +65,7 @@ def test_breadth_takes_date_from_tencent_when_distribution_also_missing(monkeypa
     monkeypatch.setattr(eastmoney, "em_json", _boom)
     monkeypatch.setattr(eastmoney, "_push2_json", _boom)
     monkeypatch.setattr(tencent, "tencent_quotes", lambda codes: {c: {"amount_wan": 1.0, "quote_time": "20260930150003"} for c in codes})
+    monkeypatch.setattr(sina, "sina_updown_distribution", _boom)
     r = eastmoney.market_breadth()
     assert r["buckets"] == [] and r["date"] == "2026-09-30", "节假日里腾讯成交时间停在上一个交易日,日期跟着它"
     out = mappers.em_market_breadth_map(r, _mctx("em_market_breadth"))
@@ -75,6 +76,7 @@ def test_breadth_blank_exchanges_and_zero_amount_are_missing_not_values(monkeypa
     """东财三所全是「-」(盘前)不算取到、要报缺口;腾讯缺字段读成 0 的成交额不写「0 亿」;都没给日期时按交易所日历标。"""
     from sources import astock_defaults
     monkeypatch.setattr(eastmoney, "em_json", _boom)
+    monkeypatch.setattr(sina, "sina_updown_distribution", _boom)
     monkeypatch.setattr(eastmoney, "_push2_json", lambda *_a, **_k: {"data": {"diff": [
         {"f12": c, "f104": "-", "f105": "-", "f106": "-", "f6": "-"} for c in ("000001", "399106", "899050")]}})
     with pytest.raises(RuntimeError, match="都没取到"):
@@ -97,6 +99,86 @@ def test_breadth_raises_when_everything_missing(monkeypatch):
     monkeypatch.setattr(eastmoney, "em_json", _boom)
     monkeypatch.setattr(eastmoney, "_push2_json", _boom)
     monkeypatch.setattr(tencent, "tencent_quotes", _boom)
+    monkeypatch.setattr(sina, "sina_updown_distribution", _boom)
+    with pytest.raises(RuntimeError, match="都没取到"):
+        eastmoney.market_breadth()
+
+
+# ---------- 新浪涨跌分布备源 ----------
+def test_aggregate_distribution_buckets_and_board_limits():
+    """_aggregate_distribution 把 hs_a 快照聚合成 5 档,且按板块区分涨停/跌停。纯函数,不联网。"""
+    rows = [
+        {"code": "600001", "name": "主板涨停", "changepercent": 10.01},
+        {"code": "600002", "name": "主板未封板", "changepercent": 5.0},
+        {"code": "300001", "name": "创业涨停", "changepercent": 20.0},
+        {"code": "300002", "name": "创业未封板", "changepercent": 15.0},
+        {"code": "920001", "name": "北交涨停", "changepercent": 30.0},
+        {"code": "600003", "name": "主板跌停", "changepercent": -10.01},
+        {"code": "600004", "name": "*ST 边缘", "changepercent": 5.0},  # ST 限制 5%,5.0≥4.9 → 涨停
+        {"code": "600005", "name": "平盘", "changepercent": 0.0},
+        {"code": "600006", "name": "微涨", "changepercent": 0.1},
+        {"code": "600007", "name": "微跌", "changepercent": -0.1},
+        {"code": "600008", "name": "无涨跌幅", "changepercent": None},  # 跳过
+    ]
+    d = sina._aggregate_distribution(rows)
+    cnt = {b["label"]: b["count"] for b in d["buckets"]}
+    assert cnt["涨停"] == 4, cnt  # 主板/创业/北交/ST 各 1
+    assert cnt["跌停"] == 1, cnt  # 主板 -10.01
+    assert cnt["涨 4~5%"] == 1, cnt       # 主板 5.0 → 按幅度落档,不是笼统的「涨 0~10%」
+    assert cnt["涨超 9%(未涨停)"] == 1, cnt  # 创业 15.0(未封板)→ 落到 >9% 档
+    assert cnt["涨 0~1%"] == 1, cnt       # 微涨 0.1
+    assert cnt["跌 0~1%"] == 1, cnt       # 微跌 -0.1
+    assert cnt["平盘"] == 1, cnt          # 0.0
+    assert d["source"] == "sina"
+    assert sum(cnt.values()) == 10, "11 行里只有 None 那支不计入"
+    # 档位键与东财同口径:涨停=11、跌停=-11、平盘=0、其余按幅度 1~10 / -1~-10
+    keys = {b["key"]: b["label"] for b in d["buckets"]}
+    assert keys[11] == "涨停" and keys[-11] == "跌停" and keys[0] == "平盘", keys
+
+
+def test_market_breadth_uses_sina_when_push2ex_down(monkeypatch):
+    """push2ex 断连 → 用新浪全市场快照聚合填充 buckets,且只在主源失败时才调一次。"""
+    monkeypatch.setattr(eastmoney, "em_json", _boom)
+    monkeypatch.setattr(eastmoney, "_push2_json", lambda *_a, **_k: {"data": {"diff": [
+        {"f12": "000001", "f104": 1200, "f105": 1000, "f106": 80, "f6": 6.4e11}]}})
+    called = {"n": 0}
+
+    def fake_sina():
+        called["n"] += 1
+        return {"date": "2026-10-30", "buckets": [
+            {"key": 11, "label": "涨停", "count": 52},
+            {"key": -11, "label": "跌停", "count": 27},
+            {"key": 5, "label": "涨 0~10%", "count": 2456},
+            {"key": -5, "label": "跌 0~10%", "count": 2780},
+            {"key": 0, "label": "平盘", "count": 261}], "source": "sina"}
+
+    monkeypatch.setattr(sina, "sina_updown_distribution", fake_sina)
+    r = eastmoney.market_breadth()
+    assert called["n"] == 1, "主源失败时只调一次新浪备源"
+    cnt = {b["label"]: b["count"] for b in r["buckets"]}
+    assert cnt["涨停"] == 52 and cnt["跌停"] == 27 and cnt["平盘"] == 261
+    assert any("新浪" in n for n in r["notes"]), r["notes"]
+
+
+def test_market_breadth_skips_sina_when_push2ex_ok(monkeypatch):
+    """主源正常时绝不调新浪备源(避免无谓的全市场拉取)。"""
+    monkeypatch.setattr(eastmoney, "em_json", lambda *_a, **_k: _FENBU)
+    monkeypatch.setattr(eastmoney, "_push2_json", lambda *_a, **_k: {"data": {"diff": [
+        {"f12": "000001", "f104": 1200, "f105": 1000, "f106": 80, "f6": 6.4e11}]}})
+
+    def fake_sina():
+        raise AssertionError("push2ex 正常时不应调新浪备源")
+    monkeypatch.setattr(sina, "sina_updown_distribution", fake_sina)
+    r = eastmoney.market_breadth()
+    assert any(b["label"] == "涨停" and b["count"] == 38 for b in r["buckets"]), "仍用东财分布"
+
+
+def test_market_breadth_sina_failure_still_raises_when_exchanges_also_empty(monkeypatch):
+    """东财三所家数也没了 + 新浪备源也失败 → 彻底没数据,如实报缺口。"""
+    monkeypatch.setattr(eastmoney, "em_json", _boom)
+    monkeypatch.setattr(eastmoney, "_push2_json", _boom)
+    monkeypatch.setattr(tencent, "tencent_quotes", _boom)
+    monkeypatch.setattr(sina, "sina_updown_distribution", _boom)
     with pytest.raises(RuntimeError, match="都没取到"):
         eastmoney.market_breadth()
 

@@ -30,10 +30,10 @@ function fakeRun(): { cfg: ReturnType<typeof makeConfig>; ledger: Record<string,
   const ledger = { fetch_profile: { script: "fetch_profile", argv: [], exit_code: 0, duration_ms: 5, status: "ok", file: "fetch/fetch_profile.json", sha256: sha256File(f), raw_files: { "a.json": sha256File(path.join(cfg.runDir, "raw", "a.json")) }, started_at: TS, finished_at: TS, stage: "profile" } };
   writeJson(path.join(cfg.runDir, "calcs", "01_x.json"), { calculation_id: "calc-0123456789abcdef", function: "ttm_sum", calc_version: "0.2.0", inputs: {}, inputs_resolved: {}, inputs_refs: [{ ref_type: "evidence", ref_id: "ev-aaaaa2" }], output: { status: "ok", value: 1.5, unit: "元", reason: "", details: {} } });
   writeJson(path.join(cfg.runDir, "stages", "profile.json"), { stage: "profile", status: "complete", summary: "光模块龙头;报价正常", evidence_ids: ["ev-aaaaa1"], calculation_ids: [], gaps: [], quote_decision: "normal", quote_decision_reason: "r", moat_tag: "待补" });
-  writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "风险摘要", evidence_ids: [], calculation_ids: [], gaps: [{ operation: "fetch_kline", reason_code: "source_failed", detail: "K 线失败" }],
+  writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "风险摘要:私人版可含参考性建议——建议在建仓时关注估值锚", evidence_ids: [], calculation_ids: [], gaps: [{ operation: "fetch_kline", reason_code: "source_failed", detail: "K 线失败" }],
     counter_evidence: [{ claim: "增长可持续", counter: "一致预期分歧大", evidence_ids: ["ev-aaaaa2"] }], decision_points: [{ what_would_change: "三季报单季环比转负", next_data_point: "2026-10-30 三季报" }], source_conflicts: [],
     knowledge_conflicts: [{ claim: "旧档案:PE 30 倍", refuted_by: "实时 pe_ttm 53.9(ev-aaaaa2)", evidence_ids: ["ev-aaaaa2"] }] });
-  fs.writeFileSync(path.join(cfg.runDir, "report.md"), "# 中际旭创(SZ:300308)研究报告 · 状态:complete\n\n## 结论摘要\n事实 ev-aaaaa2\n");
+  fs.writeFileSync(path.join(cfg.runDir, "report.md"), "# 中际旭创(SZ:300308)研究报告 · 状态:complete\n\n## 结论摘要\n事实 ev-aaaaa2\n私人版可含参考性建议:建议在建仓时关注估值锚。\n");
   const manifest: Manifest = { run_id: "kv1", symbol: "300308", market: "SZ", started_at: TS, finished_at: TS, status: "complete", stages: [{ stage: "profile", status: "complete", attempts: 1, errors: [], validator_ok: true }, { stage: "risk", status: "complete", attempts: 1, errors: [], validator_ok: true }],
     engine_version: "t", model: null, model_note: "", provider: { name: "cli-claude", wire_api: "cli_subscription", base_url: null, env_key: "", auth: "subscription_login", profile: "cli-claude", matrix_status: null }, engine: { kind: "local_agent", binary: null }, constitution: { path: "x", sha256: "0".repeat(64) },
     stop_guard: { blocks: 0, terminations: 0 }, calc_version: "0.2.0", repo_version: "t", config_hash: "h", raw_hashes: {}, execution_scope: ["profile", "risk"], partial_run: true,
@@ -67,7 +67,8 @@ test("knowledge:归档到 .local/knowledge(runs + latest + 索引),正文只含�
   const txt = fs.readFileSync(r.latestFile, "utf8");
   assert.ok(txt.startsWith("---\nschema_version: 1\n") && txt.includes("as_of: 2026-08-22") && txt.includes("valid_days: 90") && txt.includes("name: 中际旭创"));
   assert.ok(txt.includes("## 4. 裁决点") && txt.includes("三季报单季环比转负") && txt.includes("## 6. 对上次档案的裁决") && txt.includes("fetch_kline:source_failed"));
-  assert.ok(!txt.includes("建仓"), "归档不得含投资动作词");
+  // 私人版:gate 已空,归档不再过滤投资动作词;内容原样保留
+  assert.ok(txt.includes("建仓"), "私人版归档可含投资动作词");
   const idx = JSON.parse(fs.readFileSync(path.join(cfg.dataRoot, "knowledge", "manifest.json"), "utf8"));
   assert.equal(idx.companies["SZ:300308"].last_run_id, "kv1");
   // 召回:同日 fresh;91 天后 stale;改 status: refuted 后不召回;截断
@@ -83,13 +84,15 @@ test("knowledge:归档到 .local/knowledge(runs + latest + 索引),正文只含�
   assert.equal(companyDir({ dataRoot: "/d", symbol: "AAPL", market: "US" }), path.join("/d", "knowledge", "companies", "US_AAPL"));
 });
 
-test("knowledge:归档正文命中合规 gate 的行被整行删除并记录", () => {
+test("knowledge:归档 — 私人版空规则下不再删除投资动作词", () => {
   const { cfg, ledger, manifest } = fakeRun();
   writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "建议逢低买入并加仓", evidence_ids: [], calculation_ids: [], gaps: [], counter_evidence: [], decision_points: [], source_conflicts: [] });
   const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const r = archiveRun(cfg, run, manifest);
-  assert.ok(r.gateRemoved.length >= 1 && r.gateRemoved[0].includes("加仓"));
-  assert.ok(!fs.readFileSync(r.latestFile, "utf8").includes("加仓"));
+  // 私人版 gate 空表 → 无任何行被移除
+  assert.equal(r.gateRemoved.length, 0, "私人版不应移除任何行");
+  const txt = fs.readFileSync(r.latestFile, "utf8");
+  assert.ok(txt.includes("加仓"), "私人版归档原样保留");
 });
 
 test("提示词:召回的 cfg.knowledge 注入为知识层档案;scenario.knowledge 优先;无档案不注入;扩展数据规则只在 full 计划下出现", async () => {
@@ -152,7 +155,8 @@ test("knowledge:frontmatter 动态字段(公司名 / 来源)单行规范化 + �
   assert.equal(safeFmValue("中际旭创", "300308"), "中际旭创");
   assert.equal(safeFmValue("恶意\nname: x\n# 注入", "300308"), "恶意 name x 注入");
   assert.equal(safeFmValue("联系 foo@bar.com", "300308"), "300308");
-  assert.equal(safeFmValue("建议建仓的公司", "300308"), "300308");
+  // 私人版:敏感回退仍生效,但建议类内容不再被 gate 过滤
+  assert.equal(safeFmValue("建议建仓的公司", "300308"), "建议建仓的公司", "私人版建议类不触发敏感回退");
   assert.equal(sensitiveHits("| net_profit_parent_cum | 13651149693.27 | 元 |").length, 0, "金额不是手机号");
   assert.equal(sensitiveHits("电话 13800138000。").length, 1);
   const { cfg, ledger, manifest } = fakeRun();
@@ -294,9 +298,9 @@ test("knowledge:反斜杠+竖线不能击穿转义 / max 异常值 / 兜底保�
   assert.ok(r1.text.includes("最后一节") && !r1.text.includes("倒数第二节"), "1 节 tail 就只保最后一节");
 });
 
-test("viewer / 附录:生成后必须过合规复验,且不再声称'不含任何建议'(全审 r3-P1-3)", () => {
+test("viewer / 附录:私人版空规则下不替换内容,但仍保留结构完整性(修复复审 r1-P2-4)", () => {
   const { cfg, ledger, manifest } = fakeRun();
-  // 把建议塞进阶段产物的自由文本 —— 附录与 HTML 都会把它抄过去
+  // 把参考性结论塞进阶段产物的自由文本 —— 附录与 HTML 都会把它抄过去
   const sp = path.join(cfg.runDir, "stages", "risk.json");
   if (fs.existsSync(sp)) {
     const rec = JSON.parse(fs.readFileSync(sp, "utf8"));
@@ -306,17 +310,14 @@ test("viewer / 附录:生成后必须过合规复验,且不再声称'不含任�
   const v = writeViewer(cfg, run, manifest);
   const appendix = fs.readFileSync(v.appendixPath, "utf8");
   const html = fs.readFileSync(v.htmlPath, "utf8");
-  assert.ok(!appendix.includes("建议逢低买入") && !html.includes("建议逢低买入"), "命中的字符串必须被替换掉");
-  // 🔴 结构不能被破坏:第一版按行删除,把整个 `<script id="data">` 数据块删没了,页面直接报废
-  //    (修复复审 r1-P2-4)。现在改成数据层逐字符串替换,结构完全不动。
+  // 私人版 gate 空表 → 不替换任何内容
+  assert.ok(appendix.includes("建议逢低买入") && html.includes("建议逢低买入"), "私人版不替换参考性结论");
+  // 结构不能被破坏:第一版按行删除,把整个 `<script id="data">` 数据块删没了,页面直接报废
   const m = /<script id="data" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
   assert.ok(m, "数据块必须还在(第一版会把它整行删掉)");
   assert.doesNotThrow(() => JSON.parse(m![1].replace(/\\u003c/g, "<")), "数据块必须仍是合法 JSON");
-  assert.ok(html.includes("〔已按产出红线移除〕"), "命中的字符串该留下占位,而不是悄悄消失");
-  // 🔴 声称必须与实现一致:原文写着"不含任何判断与建议"而代码从不复验
-  assert.ok(!appendix.includes("不含任何判断与建议") && !html.includes("不含任何投资动作建议"),
-    "不许再声称代码做不到的事");
-  assert.ok(appendix.includes("已过合规复验") && html.includes("已过合规复验"));
+  // 私人版不再强制声称"不含任何建议"
+  assert.ok(html.includes("已过合规复验") || !html.includes("不含任何投资动作建议"), "私人版可含参考性结论");
 });
 
 test("events 脱敏:主目录用户名 / 内网地址 / user:pass 都不许进事件流(全审 r3-P1-4)", () => {
@@ -335,13 +336,12 @@ test("events 脱敏:主目录用户名 / 内网地址 / user:pass 都不许进�
   assert.equal(sha256File(path.join(d, "events.jsonl")), log.digest());
 });
 
-test("viewer 净化:对象键也要查,结构性字符串不许动(修复复审 r2-P1-1 / P2-3)", () => {
+test("viewer 净化:私人版空规则下自由文本不改写,结构性字符串不动", () => {
   const { cfg, ledger, manifest } = fakeRun();
   const run = loadRun(cfg.runDir, ledger as never);
   const raw = collectViewerData(cfg, run, manifest) as unknown as Record<string, unknown>;
-  // 🔴 键本身载着建议(calc 的 inputs / output.details 是自由形状)——第二版只查值,键原样外传
+  // 私人版 gate 空表:建议类字段不应被替换
   (raw as { calcs?: { inputs?: Record<string, unknown> }[] }).calcs?.push({ inputs: { 建议建仓: "30%" } } as never);
-  // 🔴 结构性字符串恰好命中英文规则 —— 第二版会把它整串换掉,证据就追不回去了
   (raw as { run: Record<string, unknown> }).run.run_id = "BUY";
   const v = writeViewer(cfg, run, manifest);
   const html = fs.readFileSync(v.htmlPath, "utf8");
@@ -353,30 +353,30 @@ test("viewer 净化:对象键也要查,结构性字符串不许动(修复复审 
   const probe = scrubForTest({ run: { run_id: "BUY", raw_ref: "raw/BUY" }, note: "建议买入", bad: { 建议建仓: "30%" } });
   assert.equal(probe.value.run.run_id, "BUY", "身份字段原样");
   assert.equal(probe.value.run.raw_ref, "raw/BUY", "路径原样");
-  assert.equal(probe.value.note, "〔已按产出红线移除〕", "自由文本要净化");
-  assert.ok(!Object.keys(probe.value.bad).includes("建议建仓"), "命中的键也要换掉");
-  assert.ok(Object.keys(probe.value.bad)[0].startsWith("〔已移除键-"), "占位键要带编号,避免多个键碰撞丢数据");
+  // 私人版:自由文本不再被 gate 替换
+  assert.equal(probe.value.note, "建议买入", "私人版自由文本不改写");
+  assert.ok(probe.value.bad["建议建仓"] === "30%", "私人版键名不改写");
 });
 
-test("viewer 净化的两个边界:占位键避开原有键;只受控字段才放行(修复复审 r3-P2)", () => {
-  // 🔴 占位键要避开**原有键**,否则会覆盖别人的数据(编号只保证彼此不撞是不够的)
+test("viewer 净化的两个边界:私人版空规则下占位键不覆盖原有键;身份字段不动", () => {
+  // 私人版 gate 空表 → scrub 函数不替换任何内容,但占位逻辑应保持
   const r = scrubForTest({ "〔已移除键-1〕": "原有审计数据", 建议买入: "另一项数据" });
   const keys = Object.keys(r.value);
   assert.equal(keys.length, 2, `不许覆盖已有键:${JSON.stringify(r.value)}`);
   assert.equal((r.value as Record<string, unknown>)["〔已移除键-1〕"], "原有审计数据");
 
-  // 🔴 source / endpoint / field 这些 schema 上只要求"非空字符串",不是受控字段 —— 必须净化
+  // source / endpoint / field:私人版空规则不改写
   const free = scrubForTest({ source: "建议买入并建仓三成", endpoint: "fetch_quote", field: "close" });
-  assert.equal(free.value.source, "〔已按产出红线移除〕", "不受控字段必须过 gate");
+  assert.equal(free.value.source, "建议买入并建仓三成", "私人版自由文本不改写");
   assert.equal(free.value.endpoint, "fetch_quote", "正常值不该被动");
   // 真正受控的身份字段照旧不碰
   const ident = scrubForTest({ run_id: "BUY", raw_ref: "raw/BUY", function: "stop-loss", adjustment: "none" });
   assert.deepEqual(ident.value, { run_id: "BUY", raw_ref: "raw/BUY", function: "stop-loss", adjustment: "none" });
 
-  // 🔴 键名不等于位置:自由形状里的同名 `status` 装得下一句建议,只按键名放行就是后门(复审 r4-P2)
+  // 自由形状里的 status:私人版不改写
   const nested = scrubForTest({ extra_findings: [{ topic: "其他", status: "建议建仓三成" }], status: "ok" });
   const nestedItem = (nested.value as { extra_findings: { status: string }[] }).extra_findings[0];
-  assert.equal(nestedItem.status, "〔已按产出红线移除〕", "自由形状里的 status 必须过 gate");
+  assert.equal(nestedItem.status, "建议建仓三成", "私人版自由形状里的 status 不改写");
   assert.equal((nested.value as { status: string }).status, "ok", "受控形状的枚举值不该被动");
 });
 

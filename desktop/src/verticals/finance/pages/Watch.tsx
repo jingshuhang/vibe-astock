@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { CalendarDays, Gavel, RefreshCw, RotateCcw, Zap } from "lucide-react";
+import { CalendarDays, Gavel, LayoutDashboard, RefreshCw, RotateCcw, Zap } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PageTabs, type PageTab } from "@/components/ui/PageTabs";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { cn } from "@/lib/utils";
 import { LiveTab } from "@/shortline/LiveTab";
 import { IntradayTab } from "@/shortline/IntradayTab";
+import { OverviewTab } from "@/shortline/OverviewTab";
 
-type Tab = "live" | "intraday";
+type Tab = "live" | "intraday" | "overview";
 const TABS: PageTab<Tab>[] = [
   { key: "live", label: "实时动态", icon: Zap },
+  { key: "overview", label: "市场实时概况", icon: LayoutDashboard },
   { key: "intraday", label: "竞价与盘中路径", icon: Gavel },
 ];
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -22,7 +24,10 @@ const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
  */
 export function Watch() {
   const { pathname } = useLocation();
-  const tab: Tab = pathname.replace(/\/+$/, "") === "/watch/intraday" ? "intraday" : "live";
+  const tab: Tab = (() => {
+    const seg = pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return seg === "intraday" ? "intraday" : seg === "overview" ? "overview" : "live";
+  })();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const picked = params.get("date");
@@ -43,7 +48,9 @@ export function Watch() {
         title="盯盘"
         subtitle={tab === "live"
           ? "持仓与自选、昨日梯队、大票的当下读数和盘中异动 · 页面开着就自动刷新,实际时效以行情时间为准"
-          : "昨日涨停股的竞价强弱、全天几个时点的情绪路径、昨晚验证条件的盘中读数"}
+          : tab === "overview"
+            ? "盘中判断：现在能不能动（市场状态 × 板块联动）→ 哪里在动 → 哪只封得死 → 什么时候算触发；指数与涨跌分布等全景数据收在下方折叠区"
+            : "昨日涨停股的竞价强弱、全天几个时点的情绪路径、昨晚验证条件的盘中读数"}
         actions={tab === "intraday" ? (
           <>
             <label className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground">
@@ -66,7 +73,7 @@ export function Watch() {
         ) : null}
       />
       <PageTabs label="盯盘的分页" value={tab} onChange={pickTab} options={TABS} />
-      {tab === "live" ? <LiveTab /> : <IntradayTab key={date ?? "today"} date={date} refreshNonce={refreshNonce} onBusy={setBusy} />}
+      {tab === "live" ? <LiveTab /> : tab === "overview" ? <OverviewTab /> : <IntradayTab key={date ?? "today"} date={date} refreshNonce={refreshNonce} onBusy={setBusy} />}
       <Disclaimer />
     </div>
   );

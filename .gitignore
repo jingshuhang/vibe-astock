@@ -24,3 +24,11 @@ dist/
 # 系统与日志
 .DS_Store
 *.log
+
+# 临时产物:一次性的抓取快照 / 研究中间输出 / 脚本备份(文件留在磁盘,只是不入库)
+tmp_s.json
+overview_v2.json
+scripts/*.bak-*
+
+# 工作区本地状态
+.workbuddy/

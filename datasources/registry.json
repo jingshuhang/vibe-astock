@@ -305,7 +305,9 @@
       "layer": "3 信号",
       "function": "industry_comparison",
       "mapper": "em_industry_comparison",
-      "endpoint_label": "push2/clist fs=m:90+t:2"
+      "endpoint_label": "push2/clist fs=m:90+t:2",
+      "cache_max_age_sec": 120,
+      "notes": "只有当日(盘中是实时快照)。🔴 cache_max_age_sec 必须给:早先没有这个字段 ⇒ 快照没有上限 ⇒ 板块共振被冻在上一次取到的时刻,「赚钱效应」连续两天一分不差也看不出来。120s 与 em_market_breadth 同档。"
     },
     {
       "market": [

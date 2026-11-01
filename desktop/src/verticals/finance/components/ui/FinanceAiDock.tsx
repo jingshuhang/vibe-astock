@@ -49,9 +49,9 @@ async function sendTurn({ message, session, signal }: { message: string; session
   // 回答下面列「本轮来源」:查了哪些数据(哪个来源、什么时候取的)、读了哪些网页和资料,一条没查也要说
   const activity = sourcesMarkdown(r)
     + (confirmations.length ? `\n\n${confirmations.join("\n\n")}` : "");
-  // 触发产出红线被删掉的行要**说出来**：不说的话，用户看到的是一段被悄悄剪过的回答
+  // 命中过滤规则的行要**说出来**：不说的话，用户看到的是一段被悄悄剪过的回答
   return r.redacted
-    ? `${r.reply}\n\n⚠️ 有 ${r.redacted} 行触发产出红线被移除（不给操作建议）。${activity}`
+    ? `${r.reply}\n\n⚠️ 有 ${r.redacted} 行命中输出过滤规则被移除。${activity}`
     : r.reply + activity;
 }
 
@@ -157,7 +157,7 @@ export function FinanceAiConsole({ open, onClose }: { open: boolean; onClose: ()
         title: "研究助手",
         runtime: "用你接入的 AI",
         placeholder: "问点什么…（Shift+Enter 换行）",
-        notice: "直接交代任务：AI 可联网搜索、读取网页、取数、计算并查询研究记录。回答附实际工具记录，不构成投资建议。",
+        notice: "直接交代任务：AI 可联网搜索、读取网页、取数、计算并查询研究记录。回答附实际工具记录,可提供参考性结论。",
         suggestions: ["帮我理一下最近在关注什么", "我该补哪些功课", "解释一下这个产品能干什么"],
       }}
       send={sendTurn}
@@ -180,7 +180,7 @@ export function FinanceAiDock() {
         panel: "研究助手",
         runtime: "用你接入的 AI",
         placeholder: "就这一页的内容问点什么…",
-        notice: "AI 可结合当前页面联网搜索、读取网页、获取数据和运行分析工具；会显示实际调用记录。不构成投资建议。",
+        notice: "AI 可结合当前页面联网搜索、读取网页、获取数据和运行分析工具;会显示实际调用记录。可提供参考性结论。",
       }}
       send={sendTurn}
       renderReplyActions={replyActions}

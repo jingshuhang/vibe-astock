@@ -114,7 +114,7 @@ export function Calendar() {
   const noSymbols = data && data.symbols.length === 0;
   return <div>
     <PageHeader title="事件日历"
-      subtitle="自选和持仓接下来的公司事件,加上你在台账里写的裁决点、复核日和待办,排成一条时间轴。只列来源给的日期,不打分、不给买卖建议。"
+      subtitle="自选和持仓接下来的公司事件,加上你在台账里写的裁决点、复核日和待办,排成一条时间轴。只列来源给的日期,不打分。"
       actions={<>
         <SegmentedToggle label="看多少天" value={days} options={[...DAY_OPTIONS]} onChange={(v) => { setDays(v); storageSet("vr-calendar-days", v); }} disabled={loading} />
         <button type="button" onClick={() => { void load(true); void loadVerdicts(true); }} disabled={loading} className={BTN}><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />{loading ? "取数中…" : "重新取数"}</button>

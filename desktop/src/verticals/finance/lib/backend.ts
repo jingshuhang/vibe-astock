@@ -15,6 +15,13 @@ import { readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts
 import { aiSourceName } from "./aiConnection.ts";
 import type { ImportResult } from "./importPositions.ts";
 import type { NotifyOverview } from "./notify.ts";
+import type { MarketStateResult } from "./marketState.ts";
+import type { OpportunityResult } from "./opportunity.ts";
+import type { DayOpportunityResult } from "./dayOpportunity.ts";
+import type { PlansResult } from "./plans.ts";
+import type { ShortlineOpportunityResult } from "./shortlineOpportunities.ts";
+import type { OpportunityTrackResult } from "./shortlineOpportunityTrack.ts";
+import type { MarketCallView } from "./marketCall.ts";
 import type { CalendarResult } from "./calendar.ts";
 import type { CandidateResult } from "./candidates.ts";
 import type { AbnormalResult } from "./abnormal.ts";
@@ -437,6 +444,9 @@ export const backend = {
    */
   shortlineWatchPoll: <T>(signal?: AbortSignal) =>
     call<T>("/view/shortline_watch", { method: "POST", signal, body: JSON.stringify({ action: "poll" }) }),
+  /** 盯盘 · 市场实时概况:指数 / 涨跌分布 / 短线情绪 / 行业排名 / 板块资金流拼成全景(每 ~15 秒) */
+  shortlineOverviewPoll: <T>(signal?: AbortSignal) =>
+    call<T>("/view/shortline_overview", { method: "POST", signal, body: JSON.stringify({ action: "poll" }) }),
   /** 盯盘 · 竞价与盘中路径:某天的时点快照、09:25 竞价、昨晚验证条件的盘中读数(不给日期 = 今天) */
   shortlineIntraday: <T>(date: string | null, signal?: AbortSignal) =>
     call<T>(`/view/shortline_intraday${date ? `?date=${encodeURIComponent(date)}` : ""}`, { signal }),
@@ -466,6 +476,17 @@ export const backend = {
   /** 持仓写动作:migrate = 旧持有记录转成期初流水;adopt / discard = 用户处理冲突的那条。都先备份 */
   holdingsAct: (body: { action: "migrate" | "adopt" | "discard"; id?: string; method: CostMethod }) =>
     call<{ result: MigrationResult; view: HoldingsView }>("/view/holdings", { method: "POST", body: JSON.stringify(body) }),
+  /** 个股分析（本地规则引擎）：主力行为（吸筹/洗盘/出货）+ 技术面评分 + 综合分数 */
+  stockAnalysis: (symbol: string, signal?: AbortSignal) =>
+    call<{
+      symbol: string; name: string; composite: number;
+      main_capital: { score: number; stage: string; confidence: string; advice: string; factors: string[] };
+      technical: { score: number; trend_score: number; volume_score: number; position_score: number; factors: string[] };
+      gaps?: string[]; sufficient?: boolean;
+    }>(
+      "/analysis/stock",
+      { method: "POST", body: JSON.stringify({ symbol }), signal },
+    ),
   /** 从表格导入前预览(不写):每行数据对不对、是否和已记的一样、按勾选写进去后会不会算不了 */
   holdingsImportPreview: (rows: Record<string, unknown>[], selected?: boolean[], signal?: AbortSignal) =>
     call<{ preview: ImportPreviewRow[]; existing_issues?: TradeIssue[] }>("/view/holdings", { method: "POST", body: JSON.stringify({ action: "import_preview", rows, selected }), signal }),
@@ -474,6 +495,41 @@ export const backend = {
     call<{ imported: { backup: string; imported: number; ids: string[] }; view: HoldingsView }>("/view/holdings", { method: "POST", body: JSON.stringify({ action: "import", rows, method }) }),
   /** 收益率:服务端读台账流水、取历史日线逐日估值(慢,持仓多时十几秒);结果交给 perfView.parsePerf */
   holdingsPerf: (signal?: AbortSignal) => call<unknown>("/view/holdings_perf", { signal }),
+
+  /** 市场状态:五维健康分 + 仓位上限建议;refresh=true 不用缓存 */
+  marketState: (opts: { refresh?: boolean } = {}) =>
+    call<MarketStateResult>(`/view/market_state_view${opts.refresh ? "?refresh=1" : ""}`),
+  /**
+   * 板块机会链:启动的板块 → 板块里的龙头 → 条件式规划。
+   * 与 `shortlineOpportunities`(个股视角)不是一回事 —— 这边先看钱往哪个方向去。
+   */
+  opportunityChain: (opts: { refresh?: boolean } = {}) =>
+    call<OpportunityResult>(`/view/opportunity_scan${opts.refresh ? "?refresh=1" : ""}`),
+
+  /** 当日机会发现:宽度优先,看哪些板块成分股今天整体在涨但还没成涨停潮;refresh=true 不用缓存 */
+  dayOpportunity: (opts: { refresh?: boolean } = {}) =>
+    call<DayOpportunityResult>(`/view/day_opportunity${opts.refresh ? "?refresh=1" : ""}`),
+
+  /** 超短线机会发现:从涨停股中按模式识别候选机会;refresh=true 不用缓存 */
+  shortlineOpportunities: (opts: { refresh?: boolean } = {}) =>
+    call<ShortlineOpportunityResult>(`/view/shortline_opportunities${opts.refresh ? "?refresh=1" : ""}`),
+  /**
+   * 机会清单台账:收盘快照 + 次日对账的**实测**战绩(类别 × 情绪环境)。
+   * 与 `patternPrior` 的历史先验并排显示在机会页 —— 先验是别处统计的,这里是本页自己清单的成绩。
+   */
+  shortlineOpportunityTrack: (signal?: AbortSignal) =>
+    call<OpportunityTrackResult>("/view/shortline_opportunity_track", { signal }),
+  /**
+   * 大盘判断台账:WorkBuddy 大盘全景收盘档的「交易倾向四档」快照 + 次日触发条件对账。
+   * 🔴 只存档与对账 —— 档位与触发条件来自全景侧,本系统不生成大盘建议。
+   */
+  marketCall: (signal?: AbortSignal) =>
+    call<MarketCallView>("/view/market_call", { signal }),
+  /**
+   * 交易计划:闭环的前半球 —— 今天到期 / 已到检查点的计划、买入前缺哪些项、成交后与计划的对照。
+   * 计划本身经通用台账接口读写(kind `trade_plan`),这里只读整理好的那一屏。
+   */
+  tradePlans: (signal?: AbortSignal) => call<PlansResult>("/view/trade_plans", { signal }),
 
   /** 从旧版导入:旧版默认的数据目录和它在不在 */
   vaImportInfo: (signal?: AbortSignal) => call<VaImportInfo>("/view/va_import", { signal }),

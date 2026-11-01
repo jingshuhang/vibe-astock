@@ -87,7 +87,7 @@ export async function chatStream(
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
   const content = r.redacted
-    ? `${r.reply}\n\n> ⚠️ 有 ${r.redacted} 行触发产出红线被移除(不给操作建议)。`
+    ? `${r.reply}\n\n> ⚠️ 有 ${r.redacted} 行命中输出过滤规则被移除。`
     : r.reply;
   handlers.onDelta?.(content);
   return { content, trace: [], rounds: 1 };

@@ -10,6 +10,7 @@ import { shortlineSamples } from "./samples.ts";
 import { shortlineStructure } from "./structure.ts";
 import { shortlineVerify, shortlineVerifyAct } from "./verification.ts";
 import { shortlineWatchAct, shortlineWatchAlerts } from "./watch.ts";
+import { shortlineOverviewAct } from "./overview.ts";
 import { shortlineWeekly } from "./weekly.ts";
 import { shortlineWeeklyReview, shortlineWeeklyReviewAct } from "./weekly_review.ts";
 
@@ -22,3 +23,4 @@ registerView({ id: "shortline_weekly", label: "近 5 天热度与龙头谱系", 
 registerView({ id: "shortline_weekly_review", label: "AI 周报", run: shortlineWeeklyReview, act: shortlineWeeklyReviewAct });
 registerView({ id: "shortline_intraday", label: "竞价与盘中路径", run: shortlineIntraday, act: (ctx, body, signal) => shortlineIntradayAct(ctx, body, signal) });
 registerView({ id: "shortline_watch", label: "盯盘 · 实时动态", run: shortlineWatchAlerts, act: (ctx, body, signal) => shortlineWatchAct(ctx, body, signal) });
+registerView({ id: "shortline_overview", label: "市场实时概况", run: (ctx, _q, signal) => shortlineOverviewAct(ctx, {}, signal), act: (ctx, body, signal) => shortlineOverviewAct(ctx, body, signal) });

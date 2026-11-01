@@ -26,7 +26,7 @@ const isTab = (v: string | undefined): v is Tab => TABS.some((t) => t.key === v)
 /**
  * 交易日志:自己的每笔交易对上入场那天的情绪和板位,时间久了能回答「我在情绪弱的日子是不是明显更差」。
  * 🔴 个人交易数据只给这一页看:不登记 AI 页面上下文(不调 useAiPage),不进任何 AI 提问,也不进 MCP。
- * 🔴 只统计自己的历史行为,不预测市场、不给下一笔建议。
+ * 只统计自己的历史行为,不预测市场。
  */
 export function Journal() {
   const { tab: rawTab } = useParams();
@@ -76,7 +76,7 @@ export function Journal() {
         : <ModesTab modes={st.data.modes} playbooks={st.data.playbooks} act={act} />}
 
       <p className="mt-6 border-t border-border pt-4 text-xs text-muted-foreground/80">
-        交易日志只存在本机的数据目录里,不上传,也不发给 AI。本页只统计你自己记下的历史行为,不构成投资建议。
+        交易日志只存在本机的数据目录里,不上传,也不发给 AI。本页只统计你自己记下的历史行为。
       </p>
       <Disclaimer />
     </div>

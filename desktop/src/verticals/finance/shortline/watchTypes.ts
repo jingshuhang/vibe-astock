@@ -2,10 +2,11 @@
  * 盯盘两个分页的数据形状,照后端 orchestrator/src/finance/shortline/watch.ts 与 intraday.ts。
  */
 import type { Direction, ReadingKind } from "./viewTypes";
+import type { MarketStateResult } from "@/lib/marketState";
 
 export type Phase = "weekend" | "pre_open" | "auction" | "morning" | "lunch" | "afternoon" | "closing_auction" | "closed";
 export type AlertKind = "急拉" | "急跌" | "封板" | "开板";
-export interface WatchAlert { ts: string; code: string; name: string; kind: AlertKind; change_pct: number | null; price: number | null; pct: number | null; msg: string; sources: string[] }
+export interface WatchAlert { ts: string; code: string; name: string; kind: AlertKind; change_pct: number | null; price: number | null; pct: number | null; msg: string; sources: string[]; sectors: string[] }
 export interface WatchRow { code: string; name: string; price: number | null; pct: number | null; amount_yuan: number | null; quote_time: string | null; today: boolean }
 export interface LadderWatchRow extends WatchRow { boards: number; label: string; sector: string; at_limit: boolean | null }
 export interface WatchView {
@@ -21,6 +22,56 @@ export interface WatchView {
   alerts: WatchAlert[];
   notes: string[];
   rules: { surge_pct: number; window_min: number; cooldown_min: number };
+  source: string;
+}
+
+export type OverviewBlockStatus = "ok" | "partial" | "failed" | "empty";
+export interface OverviewBlock<T> { status: OverviewBlockStatus; data: T | null; note?: string }
+export interface IndexRow { code: string; name: string; price: number | null; change_pct: number | null }
+export interface BreadthSummary {
+  scope: string;
+  limit_up: number;
+  limit_down: number;
+  up: number;
+  down: number;
+  flat: number;
+  turnover_yi: number | null;
+}
+export interface SectorRow { name: string; change_pct: number | null; up_count: number | null; down_count: number | null; rank: number | null }
+export interface BoardFlowRow { name: string; net_yi: number | null; change_pct: number | null; leader: string | null; rank: number | null }
+/** 板块多股共振信号 */
+export interface ResonanceRow {
+  name: string;
+  change_pct: number | null;
+  up_count: number | null;
+  down_count: number | null;
+  total: number | null;
+  resonance_rate: number | null;
+  rank: number | null;
+  signal: "共振" | "强动" | "一般";
+}
+export interface EventTrend {
+  topics: { keyword: string; count: number | null; trend: string | null }[];
+}
+export interface OverviewView {
+  date: string; clock: string; phase_label: string; poll_ms: number;
+  /** 指数实时(腾讯) */
+  indices: OverviewBlock<{ rows: IndexRow[]; scope: string }>;
+  /** 全市场涨跌分布 + 沪深京家数 / 成交额(东财) */
+  breadth: OverviewBlock<BreadthSummary>;
+  /** 短线盘中情绪:涨停 / 炸板 / 跌停 / 封板率(东财) */
+  shortline: OverviewBlock<Record<string, unknown>>;
+  /** 行业板块涨跌排名(东财) */
+  sectors: OverviewBlock<{ rows: SectorRow[] }>;
+  /** 板块多股共振信号 */
+  resonance: OverviewBlock<{ rows: ResonanceRow[]; scope: string }>;
+  /** 板块资金流(新浪备源) */
+  boardFlow: OverviewBlock<{ rows: BoardFlowRow[] }>;
+  /** 市场状态信号(复用 market_state 派生,与「市场状态信号」独立页同一套信号与容错) */
+  marketState: OverviewBlock<MarketStateResult>;
+  /** 事件热词(本机派生) */
+  marketEventTrend: OverviewBlock<EventTrend>;
+  notes: string[];
   source: string;
 }
 

@@ -30,7 +30,7 @@ import { buildInbox, type ExcursionLite } from "./inbox.ts";
 import { MODE_CHANGES_MAX, MODE_KIND, MODE_NAME_MAX, MODE_TEXT_FIELDS, MODE_TEXT_LABELS, MODE_TEXT_MAX, MODE_VERSIONS_MAX, cardOf, isPlaybook, modeChanged, modesPerformance, type ModeCard, type ModeTextField, type ModeVersion } from "./modes.ts";
 import { realDay } from "./num.ts";
 import { atRisk, discipline, equityCurve, rolling, violations } from "./risk.ts";
-import { buildRows, tagOf, type JournalRow, type Tag, type TagProblem } from "./rows.ts";
+import { buildRows, tagOf, type JournalRow, type PlanLink, type PlanLinks, type Tag, type TagProblem } from "./rows.ts";
 import { journalStats, type JournalStats } from "./stats.ts";
 
 /* ---------------- 设置 ---------------- */
@@ -92,6 +92,8 @@ export interface JournalData {
   /** 模式卡(建卡顺序);不合台账规则的不用,只计数 */
   cards: ModeCard[];
   invalid_cards: number;
+  /** 计划 ↔ 成交的关联(判定「按计划 / 计划外」用,见 rows.ts plannedFrom) */
+  planLinks: PlanLinks;
 }
 
 export function loadJournalData(ctx: ServiceContext): JournalData {
@@ -104,7 +106,40 @@ export function loadJournalData(ctx: ServiceContext): JournalData {
     tags: (snap.records.journal_tag ?? []).filter((r) => !tagIssues.has(r.id)).map(tagOf),
     settings: settingsOf(snap.records.journal_settings ?? [], snap.issues.journal_settings ?? []),
     ...cardsOf(snap.records[MODE_KIND] ?? [], snap.issues[MODE_KIND] ?? []),
+    planLinks: planLinksOf(snap.records[PLAN_KIND] ?? [], snap.issues[PLAN_KIND] ?? []),
   };
+}
+
+/** 台账种类字符串按既有写法直接写(这里若 import plans.ts 会与它形成循环:plans.ts 依赖本文件) */
+const PLAN_KIND = "trade_plan";
+
+/**
+ * 计划 ↔ 成交的两条关联线索。
+ * 不合台账规则(比如代码格式不对)的计划**不参与判定** —— 一条坏记录不该让别的交易凭空变成计划外,也不该让坏计划顶着一串交易。
+ */
+function planLinksOf(recs: readonly LedgerRecord[], issues: readonly LedgerIssue[]): PlanLinks {
+  const bad = new Set(issues.map((i) => i.id));
+  const rounds = new Set<string>();
+  const planIds = new Set<string>();
+  const byRound = new Map<string, PlanLink>();
+  const level = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  for (const r of recs) {
+    if (bad.has(r.id)) continue;
+    const id = str(r.id).trim();
+    if (id) planIds.add(id);
+    const ref = str(r.round_ref).trim();
+    if (!ref) continue;
+    rounds.add(ref);
+    const link: PlanLink = {
+      planned_stop: level(r.planned_stop), planned_target: level(r.planned_target),
+      created_at: str(r.created_at), updated_at: str(r.updated_at),
+    };
+    // 同一轮被多条计划认领:取最后修改的那条(和标注同口径,见 rows.ts newer)
+    const prev = byRound.get(ref);
+    if (!prev || link.updated_at > prev.updated_at) byRound.set(ref, link);
+  }
+  return { rounds, planIds, byRound };
 }
 
 function cardsOf(recs: readonly LedgerRecord[], issues: readonly LedgerIssue[]): { cards: ModeCard[]; invalid_cards: number } {
@@ -127,7 +162,7 @@ export interface JournalComputed {
 export function computeJournal(d: JournalData, fees: FeeConfig): JournalComputed {
   const ep = buildEpisodes(d.trades, fees, d.tradeIssues);
   const skipped = new Map(ep.issues.map((i) => [i.id, i.why]));
-  const rows = buildRows(ep.episodes, d.tags, skipped, new Set(d.trades.map((t) => t.id)));
+  const rows = buildRows(ep.episodes, d.tags, skipped, new Set(d.trades.map((t) => t.id)), d.planLinks);
   return { episodes: ep.episodes, rows: rows.rows, issues: ep.issues, orphans: rows.orphans, conflicts: rows.conflicts, skipped_non_a: ep.skipped_non_a, orphan_dividends: ep.orphan_dividends };
 }
 
@@ -193,6 +228,11 @@ function tagFields(body: Record<string, unknown>, opts: { manual: boolean }): Re
     if (!(PLAYBOOKS as readonly unknown[]).includes(body.playbook)) bad(`打法只能是 ${PLAYBOOKS.join(" / ")}`);
     out.playbook = body.playbook;
   }
+  /**
+   * ⚠️ `as_planned` **照收但已不作数**:判定「按计划 / 计划外」改由计划关联推导(见 rows.ts plannedFrom)。
+   * 字段留在台账种类里是因为**移除会让已有记录直接校验失败**(additionalProperties 不允许陌生字段),
+   * 不是因为它还在参与计算。界面上那个勾应当尽快撤掉,免得用户以为它还有用。
+   */
   if (body.as_planned !== undefined && body.as_planned !== null) {
     if (typeof body.as_planned !== "boolean") bad("「按计划」只能是 是 / 否 / 不填");
     out.as_planned = body.as_planned;

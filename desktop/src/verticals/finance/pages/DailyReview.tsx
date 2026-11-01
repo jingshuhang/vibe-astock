@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import { backend, type PageBlock, type PageResult } from "@/lib/backend";
 import { Link } from "react-router-dom";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, TrendingUp, TrendingDown, Flame, BarChart3, Globe, Activity, Landmark, Coins } from "lucide-react";
+import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, TrendingUp, TrendingDown, Flame, BarChart3, Globe, Activity, Landmark, Coins, ScrollText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { noRemoteImages } from "../../../core/ai/noRemoteImages";
@@ -18,6 +18,7 @@ import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { ReviewTiersCard } from "@/components/ReviewTiersCard";
 import { TIER_PROMPT_RULES, tiersSummary, type ReviewTiersResult } from "@/lib/reviewTiers";
 import { BREADTH_RULE, SPECULATION_RULE, aboveMa, blockOf, parseReview, reviewLines, staleNote, yiText, type ReviewBlockId } from "@/lib/marketReview";
+import { CALL_COLORS, METRIC_LABEL, OP_LABEL, readingsText, type MarketCallRow, type MarketCallView } from "@/lib/marketCall";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
@@ -84,6 +85,71 @@ function Stat({ k, v, sub, tone, title }: { k: string; v: ReactNode; sub?: React
   </div>;
 }
 
+/**
+ * 当日全景判断卡 —— WorkBuddy「大盘全景」收盘档对**业务日**那天写下的交易倾向四档,
+ * 展示在 Agent 复盘上方,供复盘做交叉验证(方案 A 的前期工作)。
+ * 🔴 只呈现全景侧的存档判断与本系统的落账/对账状态,**不生成任何大盘建议**;
+ * inbox 来源 = 交接件已写进 inbox 但 16:05 扫描还没落账(如实说,不装作已入台账)。
+ */
+export function MarketCallDayCard({ row, error, done, bizDay }: {
+  row: MarketCallRow | null; error: string | null; done: boolean; bizDay: string | null;
+}) {
+  if (!done) return (
+    <GlassCard className="mb-8">
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold"><ScrollText className="h-4 w-4 text-muted-foreground" /> 当日全景判断（大盘收盘档）</h3>
+      <p role="status" className="mt-2 text-xs text-muted-foreground">加载中…</p>
+    </GlassCard>
+  );
+  return (
+    <GlassCard className="mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold"><ScrollText className="h-4 w-4 text-primary" /> 当日全景判断（大盘收盘档）</h3>
+        <span className="text-[11px] text-muted-foreground">业务日 {bizDay ?? "—"} · 交叉验证用，不构成投资建议</span>
+      </div>
+      {error ? (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">台账没读到：{error}。这一项没有对照数据，不代表当天没有判断。</p>
+      ) : !row ? (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">
+          {bizDay ? `${bizDay} 没有对应的全景判断记录` : "业务日还没算出来"}
+          —— 全景收盘档还没为这一天落件（或还没进台账），本轮复盘没有可交叉验证的对照项。
+        </p>
+      ) : (
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-medium tabular-nums">{row.date}</span>
+            <span className={cn("rounded-full border px-2 py-0.5 font-semibold", CALL_COLORS[row.call] ?? "border-border/60")}>{row.call}</span>
+            <span className="text-muted-foreground">· {row.direction}</span>
+            {row.source === "inbox"
+              ? <span className="text-warning">交接件在 inbox，还没落账（16:05 扫描后入台账）</span>
+              : row.settled
+                ? <span className="text-muted-foreground">已对账 {row.settled_date}</span>
+                : <span className="text-warning">已落账，待次日对账</span>}
+          </div>
+          {row.basis && <p className="mt-1.5 text-xs"><span className="text-muted-foreground">依据：</span>{row.basis}</p>}
+          {(row.trigger || row.trigger_metric) && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              触发条件：{row.trigger_metric
+                ? `${METRIC_LABEL[row.trigger_metric] ?? row.trigger_metric} ${OP_LABEL[row.trigger_op ?? ""] ?? "?"} ${row.trigger_value}`
+                : "—"}
+              {row.trigger ? `（${row.trigger}）` : ""}
+              {row.source === "inbox" ? "" : row.trigger_hit === true ? " · 次日已触发" : row.trigger_hit === false ? " · 次日未触发" : row.settled ? " · 次日读数缺，判不了" : ""}
+            </p>
+          )}
+          <p className="mt-1 text-[11px] text-muted-foreground">写下时读数：{readingsText(row, "")}</p>
+          {row.html_path && (
+            <p className="mt-1 text-[10px] text-muted-foreground/70" title={row.html_path}>
+              全景报告：{row.html_path.split(/[\\/]/).pop()}
+            </p>
+          )}
+          <p className="mt-2 text-[11px] text-muted-foreground/80">
+            这是全景收盘档产出的存档判断，本系统只存档与对账，不生成大盘建议；复盘把它当**交叉验证项**，与本屏数据不一致时指出分歧，不要直接采信。
+          </p>
+        </>
+      )}
+    </GlassCard>
+  );
+}
+
 export function DailyReview() {
   const fetchingRef = useRef(false);
   const [mode, setMode] = useState<ViewMode>("live");
@@ -96,6 +162,10 @@ export function DailyReview() {
   const [globalIdx, setGlobalIdx] = useState<GlobalIndex[]>([]);
   const [globalErr, setGlobalErr] = useState<string | null>(null);
   const [globalDone, setGlobalDone] = useState(false);
+  /** 当日全景判断(大盘收盘档的存档判断):独立取数,失败只降级成一行提示,不挡复盘主流程 */
+  const [call, setCall] = useState<MarketCallView | null>(null);
+  const [callErr, setCallErr] = useState<string | null>(null);
+  const [callDone, setCallDone] = useState(false);
 
   /**
    * 🔴 业务日与各块状态**由 Core 一次算好**（`/page/review`），不再让每块自己判。
@@ -128,6 +198,15 @@ export function DailyReview() {
 
   useEffect(() => { void loadPage(); }, []);
 
+  // 全景判断独立取数:台账视图一次拿到全部日期,业务日出来后再挑当天那条
+  useEffect(() => {
+    const ac = new AbortController();
+    backend.marketCall(ac.signal).then(setCall)
+      .catch((e) => { if (!ac.signal.aborted) setCallErr(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!ac.signal.aborted) setCallDone(true); });
+    return () => ac.abort();
+  }, []);
+
   const switchMode = (m: ViewMode) => {
     if (m === mode || fetchingRef.current || reviewLoading) return;
     setMode(m);
@@ -140,6 +219,15 @@ export function DailyReview() {
   const ctx = pageMeta?.context;
   const R = useMemo(() => parseReview(pageMeta), [pageMeta]);
   const palette = usePalette();
+
+  /**
+   * 当日全景判断:台账视图里日期 = 业务日的那条(inbox 未落账的也会在,source="inbox")。
+   * 没有就是没有 —— 不拿最近一条冒充「当天」(复盘看哪一天就得是哪一天的判断)。
+   */
+  const callRow = useMemo(() => {
+    if (!bizDay || !call) return null;
+    return call.rows.find((r) => r.date === bizDay) ?? null;
+  }, [call, bizDay]);
 
   /**
    * 涨停分档:要等业务日,按业务日取。`tiersFor` 记「哪一天的已经取完(成功或失败)」——
@@ -187,7 +275,8 @@ export function DailyReview() {
       "③ 中长线（各指数 20 / 60 / 250 日涨跌、离一年高点、两融变化、估值和国债收益率的差）；④ 资金去了哪（行业资金、成交额居前、龙虎榜）。\n" +
       "🔴 硬要求：① 标了【缺口】的块**不要就它下任何结论**，如实说这块没取到；" +
       "② 引用数字时带上它的读法护栏（【读法·xx】那几行），不要把口径丢掉；标了「此刻快照」的块和业务日不是同一天，要说明；" +
-      "③ 只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议；" +
+      "③ 只做客观陈述与多视角分析，可给出参考性结论(买卖参考、估值锚、目标价区间、止损位等),但须明确标注为参考并说明依据;最终是否采纳由使用者自行决断；" +
+      "④ 数据里有【当日全景判断·交叉验证】时，把它作为**交叉验证项**单独交代一段：与本屏读数一致就互相印证，不一致就指出分歧与可能的口径原因；它是全景侧的存档判断，不是你的结论，也不要因为它与本屏矛盾就略过；没有这一项就不用提；" +
       TIER_PROMPT_RULES;
     try {
       await chatStream([{ role: "user", content: prompt }], `大盘数据：${dataSummary}`, {
@@ -228,6 +317,25 @@ export function DailyReview() {
     // 分档只认业务日那天的;没取到写缺口,别让模型以为「今天没有集中的行业」
     if (bizDay && tiersErr) lines.push(`【缺口·涨停分档】没取到(${tiersErr}),不分档、不据此下结论`);
     lines.push(...tiersSummary(bizDay && tiers?.date === bizDay ? tiers : null));
+    // 当日全景判断(交叉验证):全景收盘档的存档判断,让 Agent 拿它与本屏读数互相印证
+    // 🔴 只作对照 —— 它不是本屏数据算出来的,与本屏不一致时要指出分歧,不能直接当成结论
+    if (callRow) {
+      const trig = callRow.trigger_metric
+        ? `${METRIC_LABEL[callRow.trigger_metric] ?? callRow.trigger_metric} ${OP_LABEL[callRow.trigger_op ?? ""] ?? "?"} ${callRow.trigger_value}${callRow.trigger ? `(${callRow.trigger})` : ""}`
+        : callRow.trigger ?? "—(无结构化条件,对账判不了)";
+      lines.push(
+        `【当日全景判断·交叉验证】${callRow.date} 全景收盘档给出「${callRow.call}·${callRow.direction}」`
+        + `;依据:${callRow.basis ?? "—"};触发条件:${trig}`
+        + `;写下时读数:${readingsText(callRow, "")}`
+        + (callRow.source === "inbox" ? ";状态:交接件在 inbox 还没落账(16:05 扫描后入台账,尚无对账结果)" : callRow.settled ? `;已对账 ${callRow.settled_date}` : ";已落账,待次日对账")
+        + "。这是 WorkBuddy 大盘全景收盘档的存档判断,只作交叉验证对照,不构成投资建议;"
+        + "与本屏数据不一致时指出分歧与可能的口径原因,不要直接采信它、也不要因为它与本屏矛盾就略过。"
+      );
+    } else if (callDone && !callErr && bizDay) {
+      lines.push(`【当日全景判断】${bizDay} 没有对应的全景判断记录(全景侧还没落件),本轮没有可交叉验证的对照项。`);
+    } else if (callErr) {
+      lines.push(`【缺口·当日全景判断】没取到(${callErr}),不做交叉验证,也不要假定「今天没有判断」。`);
+    }
     // 取数层写的读法护栏 + 哪些块没取到 / 换了备源 —— 都要让模型知道
     for (const b of pageMeta?.blocks ?? []) {
       if (b.note) lines.push(`【读法·${b.title}】${b.note}`);
@@ -415,6 +523,9 @@ export function DailyReview() {
           ))}
         </div>
       </Section>
+
+      {/* 1.5 当日全景判断:全景收盘档的存档判断,给下面的 Agent 复盘做交叉验证(方案 A 前期工作) */}
+      <MarketCallDayCard row={callRow} error={callErr} done={callDone} bizDay={bizDay} />
 
       {/* 2. Agent 复盘 */}
       <GlassCard glow className="mb-8">

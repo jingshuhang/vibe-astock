@@ -53,7 +53,9 @@ export function buildInbox(rows: readonly JournalRow[], rules: Rules, rulesDefau
     if (medCap && cap && cap > medCap * DEVIATION_X) flags.push({ key: "oversized", text: `占用 ${money0(cap)} 元,是你中位仓位(${money0(medCap)})的 ${pyFixed(cap / medCap, 1)} 倍` });
     const hold = r.hold_days;
     if (medHold !== null && hold !== null && medHold > 0 && hold > medHold * DEVIATION_X) flags.push({ key: "held_long", text: `持有 ${hold} 天,是你中位持有(${g(medHold)} 天)的 ${pyFixed(hold / medHold, 1)} 倍` });
-    if (r.as_planned === false) flags.push({ key: "unplanned", text: "自己标了「计划外」" });
+    // 「按计划 / 计划外」现在是**推导**出来的(见 rows.ts plannedFrom):没关联计划就是计划外,
+    // 不再看用户自己勾的那个布尔 —— 所以这里要告诉他去哪补,而不是让他回去改那个勾
+    if (r.as_planned === false) flags.push({ key: "unplanned", text: "没关联任何计划，一律记计划外 —— 去「交易计划」页关联" });
     if (r.episode && !r.episode.closed && !r.planned_stop) flags.push({ key: "no_stop", text: "还在手上,但没写计划止损 —— 最坏情况无从估计" });
     const ex = excursions?.get(r.key);
     if (ex) {

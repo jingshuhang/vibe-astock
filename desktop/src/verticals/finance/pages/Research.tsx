@@ -26,6 +26,7 @@ import { WeeklyCompareButton } from "../components/WeeklyCompareButton";
 import { subscriptionConfig } from "@/lib/aiConnection";
 import { ShareCardPanel } from "../components/ShareCardPanel";
 import { ThesisPanel } from "../components/ui/ThesisPanel";
+import { StockAnalysisPanel } from "../components/StockAnalysisPanel";
 
 /**
  * 「个股深挖」（研究工具下）—— 选一只股票，走势、财报、事件回看直接看（概览）；要完整研究再切分页。
@@ -461,6 +462,8 @@ export function Research() {
           <EventStudyCard symbol={chartSymbol} onData={setEvents} />
           {/* 我的论点与判据：先看事实，再对照自己写下的判断；事件日历指引用户来这里写（审计第三轮 C7） */}
           <ThesisPanel key={chartSymbol} symbol={chartSymbol} name={stockName || undefined} />
+          {/* 个股分析：主力行为阶段 + 技术面评分，本地规则引擎，无需 LLM / 外部服务 */}
+          <StockAnalysisPanel symbol={chartSymbol} />
         </> : (
           <GlassCard className="mb-4">
             <h3 className="mb-2 font-semibold">先在上面选一只股票</h3>

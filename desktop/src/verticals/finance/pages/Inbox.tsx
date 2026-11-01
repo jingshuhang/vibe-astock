@@ -138,7 +138,7 @@ export function Inbox() {
   const sched = data?.scheduler;
   return <div>
     <PageHeader title="提醒"
-      subtitle="交易日开盘前自动整理「盘前提醒」、收盘后整理「收盘摘要」和「自选变化」放进这里,也可以推到系统通知或飞书 / 企业微信 / 钉钉群。只列事实,不给买卖建议。"
+      subtitle="交易日开盘前自动整理「盘前提醒」、收盘后整理「收盘摘要」和「自选变化」放进这里,也可以推到系统通知或飞书 / 企业微信 / 钉钉群。"
       actions={inbox && inbox.total > 0 && <>
         <button type="button" onClick={() => void act("read", "inbox/read", { all: true })} disabled={!inbox.unread || busy !== null} className={BTN}><CheckCheck className="h-3.5 w-3.5" />全部标为已读</button>
         <button type="button" onClick={() => { if (confirm("清空收件箱?")) void act("clear", "inbox/clear", {}); }} disabled={busy !== null} className={cn(BTN, "hover:text-destructive")}><Trash2 className="h-3.5 w-3.5" />清空</button>

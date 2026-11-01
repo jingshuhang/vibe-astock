@@ -27,7 +27,7 @@ function Overview({ v, hide }: { v: Ready; hide: boolean }) {
         <Tile k="净盈亏(元)" v={hideIf(hide, moneySigned(o.net_pnl))} cls={tone(o.net_pnl)} sub={`${o.money_scored} 笔有成交明细`} />
       </div>
       <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-        共 {o.count} 笔({o.scored} 笔有盈亏)。这是对你自己历史行为的统计,不预测市场,也不给下一笔建议。
+        共 {o.count} 笔({o.scored} 笔有盈亏)。这是对你自己历史行为的统计,不预测市场走势。
       </p>
     </Panel>
   );

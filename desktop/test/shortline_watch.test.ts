@@ -21,9 +21,9 @@ const LIVE: WatchView = {
   turnover: { date: "2026-10-09", rows: [{ ...row("601138", "工业富联", 60, 2.1), rank: 1 }] },
   bigcap: { total: 378, date: "2026-10-12", refreshed_at: "2026-10-12T02:01:20.000Z", top: [row("601318", "中国平安", 50, 3.3)], bottom: [row("600519", "贵州茅台", 1400, -2.2)] },
   alerts: [
-    { ts: "10:01:30", code: "600825", name: "新华传媒", kind: "封板", change_pct: null, price: 8.8, pct: 10, msg: "触及涨停 8.8", sources: ["昨日9板"] },
-    { ts: "10:01:00", code: "000001", name: "平安银行", kind: "急拉", change_pct: 2, price: 12, pct: 1.2, msg: "1 分钟 +2.0%(现价 12,今日 +1.2%)", sources: ["持仓"] },
-    { ts: "09:58:12", code: "601318", name: "中国平安", kind: "急跌", change_pct: -1.6, price: 50, pct: 3.3, msg: "2 分钟 -1.6%(现价 50,今日 +3.3%)", sources: ["大票"] },
+    { ts: "10:01:30", code: "600825", name: "新华传媒", kind: "封板", change_pct: null, price: 8.8, pct: 10, msg: "触及涨停 8.8", sources: ["昨日9板"], sectors: [] },
+    { ts: "10:01:00", code: "000001", name: "平安银行", kind: "急拉", change_pct: 2, price: 12, pct: 1.2, msg: "1 分钟 +2.0%(现价 12,今日 +1.2%)", sources: ["持仓"], sectors: [] },
+    { ts: "09:58:12", code: "601318", name: "中国平安", kind: "急跌", change_pct: -1.6, price: 50, pct: 3.3, msg: "2 分钟 -1.6%(现价 50,今日 +3.3%)", sources: ["大票"], sectors: [] },
   ],
   notes: ["行情这一轮分 9 批取,1 批没取到,稍后自动重试"],
   rules: { surge_pct: 1.5, window_min: 3, cooldown_min: 5 },
@@ -106,7 +106,7 @@ test("实时动态:收盘后 / 休市不判断异动,写清原因和刷新间隔
 test("给 AI 的实时动态摘要:异动、自选、梯队强弱;不含持仓(只因持仓才盯的异动也不给)", async () => {
   await withRenderer(async (r) => {
     const { liveSummary } = await r.load(`${DIR}/LiveTab.tsx`);
-    const mixed = { ts: "09:59:00", code: "002001", name: "新和成", kind: "急跌", change_pct: -1.8, price: 20, pct: -3.5, msg: "2 分钟 -1.8%", sources: ["持仓", "昨日2板"] };
+    const mixed = { ts: "09:59:00", code: "002001", name: "新和成", kind: "急跌", change_pct: -1.8, price: 20, pct: -3.5, msg: "2 分钟 -1.8%", sources: ["持仓", "昨日2板"], sectors: [] };
     const s = liveSummary({ ...LIVE, alerts: [...LIVE.alerts, mixed] });
     assert.match(s, /北京时间 2026-10-12 10:01:32,上午连续竞价,正在判断异动/);
     assert.match(s, /10:01:30 封板 新华传媒\(600825\) 触及涨停 8\.8 \[昨日9板\]/);
@@ -160,7 +160,12 @@ test("竞价与盘中路径:时点状态、09:25 竞价强弱、路径表(09:25 
     assert.match(t, /09:25 已存 09:25:20 存 · 42\/43 只 09:35 没存成 行情只取到 0 只 10:00 已存/);
     assert.match(t, /11:30 没存到 这个时点没存到快照/);
     assert.match(t, /14:00 待存 14:00–14:08 自动存/);
-    assert.match(t, /昨日涨停股 · 今日竞价强弱\(09:25:20 存\) 样本是 2026-10-09 收盘封住的 43 只,取到竞价行情 42 只。口径:当日开盘价 ÷ 昨收。/);
+    // 标题行右侧多了一个「所以呢」标签（竞价块内联结论），所以分两段断言，不锁死相邻关系
+    assert.match(t, /昨日涨停股 · 今日竞价强弱\(09:25:20 存\)/);
+    assert.match(t, /样本是 2026-10-09 收盘封住的 43 只,取到竞价行情 42 只。口径:当日开盘价 ÷ 昨收。/);
+    // 判断条在时点条之前（第一屏），且判据不足时明确写「时点不够」而不是给倾向
+    assert.match(t, /现在做不做 可做，按清单/);
+    assert.match(t, /封板率斜率 时点不够/);
     assert.match(t, /\+1\.20% 中位数\(多数人的体感\) \+1\.50% 均值 60% 高开占比\(25\/42\) 3 低开超 5%/);
     assert.match(t, /3板及以上 \(5 只\) \+5\.10% 高开 80%/);
     assert.match(t, /最高标\(9 板\)· 客观读数 新华传媒 600825 · 出版 \+10\.00%/);

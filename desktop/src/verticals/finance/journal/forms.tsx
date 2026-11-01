@@ -10,7 +10,7 @@ import {
   fillsPayload, parseNum, ruleValueText, sharesText,
   type FeeKey, type FillDraft, type JournalRow, type JournalSettings, type RuleKey,
 } from "@/lib/journal";
-import { BTN, BTN_GHOST, INPUT, PlannedToggle } from "./bits";
+import { BTN, BTN_GHOST, INPUT } from "./bits";
 import { errText, type JournalAction } from "./useJournal";
 
 export type Act = (body: JournalAction) => Promise<unknown>;
@@ -68,11 +68,15 @@ function optPrice(s: string, label: string): number | null {
   return v;
 }
 
-/** 打法 / 按计划 / 备注:只带填了的(后端不收空值) */
-function tagBody(playbook: string, planned: boolean | null, note: string): Record<string, unknown> {
+/**
+ * 打法 / 备注:只带填了的(后端不收空值)。
+ * 🔴 这里**不再带 as_planned**：「按计划 / 计划外」现在由「有没有挂计划」推导(见 journal/rows.ts),
+ *    界面上的三态切换已撤掉 —— 留一个点了不作数的勾,比没有更糟。
+ *    台账里的 as_planned 字段仍然保留:老记录(VA 导入)靠它兜底,移除会让存量记录校验失败。
+ */
+function tagBody(playbook: string, note: string): Record<string, unknown> {
   return {
     ...(playbook ? { playbook } : {}),
-    ...(planned !== null ? { as_planned: planned } : {}),
     ...(note.trim() ? { note: note.trim() } : {}),
   };
 }
@@ -123,7 +127,6 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
   const [symbol, setSymbol] = useState("");
   const [name, setName] = useState("");
   const [playbook, setPlaybook] = useState("");
-  const [planned, setPlanned] = useState<boolean | null>(null);
   const [note, setNote] = useState("");
   const [date, setDate] = useState(today);
   const [pnl, setPnl] = useState("");
@@ -135,7 +138,7 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
   const open = A_SHARE.test(code) ? openShares(code) : undefined;
 
   const reset = () => {
-    setSymbol(""); setName(""); setPlaybook(""); setPlanned(null); setNote(""); setPnl(""); setStop(""); setTarget("");
+    setSymbol(""); setName(""); setPlaybook(""); setNote(""); setPnl(""); setStop(""); setTarget("");
     setFills([emptyFill("buy", today)]);
   };
 
@@ -143,7 +146,7 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
     if (!A_SHARE.test(code)) { setMsg({ ok: false, text: "代码要是 6 位数字(交易日志只管 A 股)" }); return; }
     let body: JournalAction;
     try {
-      const tags = tagBody(playbook, planned, note);
+      const tags = tagBody(playbook, note);
       if (mode === "fills") {
         const f = fillsPayload(fills);
         if ("error" in f) throw new Error(f.error);
@@ -188,7 +191,6 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
         <input aria-label="简称" value={name} onChange={(e) => setName(e.target.value)} placeholder="简称(可选)" className={cn(INPUT, "w-32")} />
         <PlaybookSelect value={playbook} onChange={setPlaybook} playbooks={playbooks} />
         {mode === "manual" && <input aria-label="盈亏%" value={pnl} onChange={(e) => setPnl(e.target.value)} placeholder="盈亏% 如 3.2 / -5" className={cn(INPUT, "w-32")} />}
-        <PlannedToggle value={planned} onChange={setPlanned} />
       </div>
       <input aria-label="备注" value={note} onChange={(e) => setNote(e.target.value)} placeholder="当时为什么做这笔(复盘时最值钱的一栏)" className={cn(INPUT, "w-full")} />
       {open !== undefined && mode === "fills" && (
@@ -229,10 +231,9 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
   );
 }
 
-/** 改有成交明细那一笔的标注:打法、按计划、备注、计划止损 / 目标(整条换掉) */
+/** 改有成交明细那一笔的标注:打法、备注、计划止损 / 目标(整条换掉) */
 export function TagEditor({ row, playbooks, hide, act, onDone }: { row: JournalRow; playbooks: readonly string[]; hide: boolean; act: Act; onDone: () => void }) {
   const [playbook, setPlaybook] = useState(row.playbook ?? "");
-  const [planned, setPlanned] = useState<boolean | null>(row.as_planned);
   const [note, setNote] = useState(row.note);
   const [stop, setStop] = useState(row.planned_stop === null ? "" : String(row.planned_stop));
   const [target, setTarget] = useState(row.planned_target === null ? "" : String(row.planned_target));
@@ -241,7 +242,7 @@ export function TagEditor({ row, playbooks, hide, act, onDone }: { row: JournalR
     let body: JournalAction;
     try {
       const s = optPrice(stop, "计划止损价"), t = optPrice(target, "计划目标价");
-      body = { action: "tag", trade_id: row.key, ...tagBody(playbook, planned, note), ...(s !== null ? { planned_stop: s } : {}), ...(t !== null ? { planned_target: t } : {}) };
+      body = { action: "tag", trade_id: row.key, ...tagBody(playbook, note), ...(s !== null ? { planned_stop: s } : {}), ...(t !== null ? { planned_target: t } : {}) };
     } catch (e) {
       setMsg({ ok: false, text: errText(e) });
       return;
@@ -253,7 +254,6 @@ export function TagEditor({ row, playbooks, hide, act, onDone }: { row: JournalR
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[12px] font-semibold">编辑标注</span>
         <PlaybookSelect value={playbook} onChange={setPlaybook} playbooks={playbooks} />
-        <PlannedToggle value={planned} onChange={setPlanned} />
         <label className="flex items-center gap-1.5 text-[12px]">
           <span className="text-muted-foreground">止损</span>
           <input {...secret(hide)} inputMode="decimal" aria-label="计划止损价" value={stop} onChange={(e) => setStop(e.target.value)} className={cn(INPUT, "w-24 py-1 text-right text-[12px]")} />
@@ -279,7 +279,6 @@ export function ManualEditor({ row, playbooks, act, onDone }: { row: JournalRow;
   const [date, setDate] = useState(row.date);
   const [name, setName] = useState(row.name);
   const [playbook, setPlaybook] = useState(row.playbook ?? "");
-  const [planned, setPlanned] = useState<boolean | null>(row.as_planned);
   const [note, setNote] = useState(row.note);
   const [pnl, setPnl] = useState(row.pnl_pct === null ? "" : String(row.pnl_pct));
   const { busy, msg, setMsg, run } = useSubmit();
@@ -289,7 +288,7 @@ export function ManualEditor({ row, playbooks, act, onDone }: { row: JournalRow;
     if (p === undefined) { setMsg({ ok: false, text: "盈亏% 要是数字" }); return; }
     const body: JournalAction = {
       action: "manual", id: row.tag_id, symbol: row.symbol, date, ...(name.trim() ? { name: name.trim() } : {}),
-      ...tagBody(playbook, planned, note), ...(p !== null ? { pnl_pct: p } : {}),
+      ...tagBody(playbook, note), ...(p !== null ? { pnl_pct: p } : {}),
     };
     if (await run(() => act(body), "已保存")) onDone();
   };
@@ -301,7 +300,6 @@ export function ManualEditor({ row, playbooks, act, onDone }: { row: JournalRow;
         <input aria-label="简称" value={name} onChange={(e) => setName(e.target.value)} placeholder="简称" className={cn(INPUT, "w-28 py-1 text-[12px]")} />
         <PlaybookSelect value={playbook} onChange={setPlaybook} playbooks={playbooks} />
         <input aria-label="盈亏%" value={pnl} onChange={(e) => setPnl(e.target.value)} placeholder="盈亏%" className={cn(INPUT, "w-24 py-1 text-[12px]")} />
-        <PlannedToggle value={planned} onChange={setPlanned} />
       </div>
       <input aria-label="备注" value={note} onChange={(e) => setNote(e.target.value)} placeholder="备注" className={cn(INPUT, "w-full")} />
       <div className="flex flex-wrap items-center gap-3">

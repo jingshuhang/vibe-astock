@@ -379,7 +379,7 @@ test("🔴 同一个时点同时存:只取一次数;先存的那张不被换掉;
 test("收盘取数:五份逐个现取当天的;取到一部分照实写;全没取到算失败让定时任务重试", async () => {
   const ctx = tmpCtx();
   try {
-    const job = (day: string) => ({ ctx, day, now: sh("15:35", day), signal, state: undefined, manual: false }) as JobContext;
+    const job = (day: string) => ({ ctx, day, now: sh("18:35", day), signal, state: undefined, manual: false }) as JobContext;
     const calls: { endpoint: string; args?: Record<string, unknown>; consistency?: unknown }[] = [];
     const r = await shortlineCloseFetch(job(DAY), async (_c, req) => {
       calls.push(req);

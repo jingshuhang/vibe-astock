@@ -990,8 +990,9 @@ test("🔴 /ledger 的 records 与 issues 必须来自同一次读盘(分两次�
 test("🔴 垂类自管的台账种类(managedWrites)不许经通用接口写或删,读照常;别的种类不受影响", async () => {
   const ctx = svcCtx();
   const managed = Object.entries(currentPlugin().ledger?.kinds ?? {}).filter(([, d]) => d.managedWrites === true).map(([k]) => k);
-  // 金融包:明日验证有 09:15 时间锁,AI 复盘 / 周报只由自己的流程写(连同数字核对结果)
-  assert.deepEqual(managed.sort(), ["shortline_review", "shortline_weekly_review", "verification"]);
+  // 金融包:明日验证有 09:15 时间锁,AI 复盘 / 周报只由自己的流程写(连同数字核对结果);
+  // 机会清单台账(18:45 快照+次日对账)、大盘判断台账(16:05 扫 inbox+对账)同样只由定时任务写,幂等性依赖 ledgerReplace
+  assert.deepEqual(managed.sort(), ["market_call", "opportunity_track", "shortline_review", "shortline_weekly_review", "verification"]);
   // 内部写入照常(页面自己的写入流程走这些)
   const seeded = ledgerUpsert(ctx, { kind: "verification", record: { date: "2026-10-09", metric: VERIFY_METRIC_KEYS[0]!, direction: DIRECTIONS[0]! } });
   const server = createApiServer(ctx, { token: "t-test-token-0123456789" });

@@ -273,7 +273,7 @@ export function Portfolio({ tabs }: { tabs?: ReactNode } = {}) {
 
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-success/25 bg-success/5 p-3 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-        <span>交易流水<b className="text-foreground">保存在本地</b>，不进仓库。使用截图／表格转写时，所选文件内容会发送给已连接的 AI；行情和汇率查询会发送标的代码。行情每半小时自动刷新，也可手动刷新。本产品不提供标的、不给建议，只帮你把自己的账理清楚。</span>
+        <span>交易流水<b className="text-foreground">保存在本地</b>，不进仓库。使用截图／表格转写时，所选文件内容会发送给已连接的 AI；行情和汇率查询会发送标的代码。行情每半小时自动刷新，也可手动刷新。本产品帮你把自己的账理清楚。</span>
       </div>
 
       {migration && (

@@ -107,20 +107,6 @@ export function Slot<T>({ st, label, slow, children }: { st: Load<T>; label: str
   return <>{children(st.data)}</>;
 }
 
-/** 按计划 / 计划外 / 不填 三态切换 */
-export function PlannedToggle({ value, onChange }: { value: boolean | null; onChange: (v: boolean | null) => void }) {
-  return (
-    <div role="group" aria-label="按不按计划" className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5">
-      {([["按计划", true], ["计划外", false]] as const).map(([label, v]) => (
-        <button key={label} type="button" aria-pressed={value === v} onClick={() => onChange(value === v ? null : v)}
-          className={cn("rounded-md px-2 py-1 text-[12px] transition-colors", value === v ? "bg-primary/15 font-medium text-primary" : "text-muted-foreground hover:text-foreground")}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export const INPUT = "rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm outline-none focus:border-primary/60";
 export const BTN = "inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50";
 export const BTN_GHOST = "inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-50";

@@ -13,6 +13,22 @@ import { Section } from "./FactsPanels";
 import { finite, pctColor, rate, reading, safeArray, signed } from "./format";
 import { GapsAndSource } from "./ViewBits";
 import type { CaptureResult, CheckItem, IntradayResult, Slot, SlotRow, Snapshot } from "./watchTypes";
+import { AiWatchPanel } from "./AiWatchPanel";
+import { IntradayVerdictBar } from "./IntradayVerdictBar";
+import { auctionTag, intradayVerdict, pathTag, type InlineTag, type LampTone } from "./intradayVerdict";
+import { useIntradayAiWatch } from "./useIntradayAiWatch";
+
+/** 区块右上角的「所以呢」标签。判断档位不用红绿（红绿只留给价格），跟判断条同一套色 */
+const TAG_STYLE: Record<LampTone, string> = {
+  danger: "border-warning/45 bg-warning/10 text-warning",
+  warning: "border-info/40 bg-info/10 text-info",
+  ok: "border-primary/35 bg-primary/10 text-primary",
+  unknown: "border-border/60 text-muted-foreground",
+};
+function Tag({ t }: { t: InlineTag | null }) {
+  if (!t) return null;
+  return <span className={cn("rounded-md border px-2 py-0.5 text-[12px]", TAG_STYLE[t.tone])}>{t.text}</span>;
+}
 
 const STATE_TEXT: Record<SlotRow["state"], string> = { saved: "已存", failed: "没存成", skipped: "休市", missing: "没存到", upcoming: "待存" };
 const STATE_STYLE: Record<SlotRow["state"], string> = {
@@ -49,7 +65,7 @@ function Big({ value, label, className }: { value: string; label: string; classN
   return <div><div className={cn("font-mono text-2xl font-bold tabular-nums", className)}>{value}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>;
 }
 
-function Auction({ snap, reason, basisLabel }: { snap: Snapshot | null; reason: string | null; basisLabel: string }) {
+function Auction({ snap, reason, basisLabel, tag }: { snap: Snapshot | null; reason: string | null; basisLabel: string; tag?: InlineTag | null }) {
   if (!snap) {
     return (
       <Section icon={Gavel} title="昨日涨停股 · 今日竞价强弱">
@@ -61,6 +77,7 @@ function Auction({ snap, reason, basisLabel }: { snap: Snapshot | null; reason: 
   const tiers = Object.entries(c.by_tier ?? {});
   return (
     <Section icon={Gavel} title={`昨日涨停股 · 今日竞价强弱(${snap.clock} 存)`}
+      tag={<Tag t={tag ?? null} />}
       hint={`样本是 ${snap.prev_date} 收盘封住的 ${c.expected} 只,取到竞价行情 ${c.sample} 只。口径:${basisLabel}。`}>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Big value={signed(c.median)} label="中位数(多数人的体感)" className={pctColor(c.median)} />
@@ -103,11 +120,12 @@ function Auction({ snap, reason, basisLabel }: { snap: Snapshot | null; reason: 
 
 const n = (v: number | null | undefined, unit = "") => (finite(v) === null ? "—" : `${v}${unit}`);
 
-function PathTable({ slots, closed, today }: { slots: SlotRow[]; closed: boolean; today: boolean }) {
+function PathTable({ slots, closed, today, tag }: { slots: SlotRow[]; closed: boolean; today: boolean; tag?: InlineTag | null }) {
   const saved = slots.filter((s) => s.snapshot);
   const maxAbs = Math.max(1, ...saved.map((s) => Math.abs(s.snapshot!.cohort.median)));
   return (
     <Section icon={Route} title="今日情绪路径"
+      tag={<Tag t={tag ?? null} />}
       hint="同样是收盘 -2%,「早上 +3% 一路杀下来」和「早上 -5% 修复上来」是完全不同的两天,只看收盘值读不出这个差别。上排是昨日涨停股的中位涨幅(承接强弱),下面是当时全市场的涨停 / 炸板家数(扩散或退潮)。">
       {saved.length === 0 ? <p role="status" className="text-[13px] text-muted-foreground">{closed ? "这一天休市,没有盘中路径。" : today ? "这一天还没有存到时点快照。后台在 09:25 / 09:35 / 10:00 / 11:30 / 14:00 / 15:00 自动存,程序开着就行。" : "这一天没存到时点快照(当时程序没开着,或取数失败)。"}</p> : (
         <>
@@ -215,8 +233,17 @@ function Checks({ checks, date, closed, today }: { checks: IntradayResult["check
 
 export function IntradayView({ r, onCapture, capturing, captureMsg }: { r: IntradayResult; onCapture: (() => void) | null; capturing: boolean; captureMsg: string | null }) {
   const closed = r.trading_day === false;
+  const ai = useIntradayAiWatch(r);
+  const v = intradayVerdict(r);
   return (
     <div className="space-y-4">
+      {/* 第一屏：AI 说为什么 → 判断条给「做不做」。两者贴着放，读的顺序就是「原因 → 结论」 */}
+      <AiWatchPanel
+        state={ai}
+        title="AI 盯盘 · 竞价与盘中"
+        pausedHint={closed ? "这一天休市，没有盘中路径可分析" : "交易时段自动运行（每 10 分钟一轮）；还没存到时点快照时不跑"}
+      />
+      <IntradayVerdictBar v={v} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[12px] text-muted-foreground">
           {r.date}{r.today ? "(今天)" : ""} · {closed ? "休市,不存快照" : r.today ? "后台在每个时点的窗口里自动存一张(程序开着就行),过了时点补不回来" : "当天存下的时点快照,没存的补不回来"}
@@ -231,8 +258,8 @@ export function IntradayView({ r, onCapture, capturing, captureMsg }: { r: Intra
       </div>
       {captureMsg && <p role="status" className="text-[12px] text-muted-foreground">{captureMsg}</p>}
       <SlotStrip slots={r.slots} />
-      <Auction snap={r.auction} reason={r.auction_reason} basisLabel={r.basis_labels.open} />
-      <PathTable slots={r.slots} closed={closed} today={r.today} />
+      <Auction snap={r.auction} reason={r.auction_reason} basisLabel={r.basis_labels.open} tag={auctionTag(r)} />
+      <PathTable slots={r.slots} closed={closed} today={r.today} tag={pathTag(r)} />
       <Checks checks={r.checks} date={r.date} closed={closed} today={r.today} />
       {safeArray<string>(r.warnings).map((w) => <p key={w} role="status" className="text-[11px] text-warning">⚠️ {w}</p>)}
       <GapsAndSource gaps={safeArray<string>(r.gaps)} source={r.source} />

@@ -13,7 +13,8 @@ import { FINANCE_LEDGER_KINDS } from "../src/finance/ledger_kinds.ts";
 import "../src/finance/register.ts";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const HIDDEN = ["closed_position", "trade", "position", "journal_tag", "journal_settings", "mode_card"];
+// trade_plan 是「下单前写下的价位」,和成交 / 持仓同一档,不交给模型(见 ledger_kinds.ts 的说明)
+const HIDDEN = ["closed_position", "trade", "position", "journal_tag", "journal_settings", "mode_card", "trade_plan"];
 
 test("read_ledger 不返回成交、持仓和交易日志,只说明哪些没给", async () => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "va-ledger-ai-"));

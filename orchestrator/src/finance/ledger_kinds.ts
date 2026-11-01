@@ -33,6 +33,8 @@ const REQUIRED_SYMBOL = { type: "string", pattern: `^${SYMBOL_VALUE}$` };
  * 所以不存在"没装就静默不校验"那种情况)。
  */
 const DATE = { type: "string", anyOf: [{ maxLength: 0 }, { format: "date" }] };
+/** 盘口时点 HH:MM(留空或合法时刻)。和 `DATE` 同一口径:空值是允许的"没填",不是校验放水 */
+const TIME = { type: "string", anyOf: [{ maxLength: 0 }, { pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$" }] };
 const TEXT = (max = 500) => ({ type: "string", maxLength: max });
 const NONEMPTY = (max = 500) => ({ type: "string", minLength: 1, maxLength: max, pattern: "\\S" });
 const COUNT = { type: "integer", minimum: 0 };
@@ -86,7 +88,18 @@ export const FINANCE_FIELD_LABELS: Record<string, string> = {
   date: "日期", price: "价格", fee: "费用", amount: "金额", ratio: "比例", migrated_from: "迁移自", written_at: "当初写下时间",
   metric: "读数", direction: "预期方向", reason: "理由",
   trade_id: "所属交易", playbook: "打法", as_planned: "按计划", planned_stop: "计划止损价", planned_target: "计划目标价",
+  plan_id: "关联计划", thesis: "为什么做这笔", planned_entry: "计划入场价", position_pct: "计划占仓 %",
+  watch: "观察条件", next_check: "下一次检查点", valid_until: "有效期至", round_ref: "关联那一轮",
   pnl_pct: "盈亏 %", planned_at: "标注时间",
+  code: "代码", boards: "连板数", sector: "行业", seal_time: "封板时间", pattern_type: "模式",
+  pattern_confidence: "原始置信度", regime: "情绪环境", seal_bucket: "封板分档", in_main_sector: "主线行业",
+  market_phase: "市场相位", settled: "已对账", next_ret: "次日涨跌 %", next_limit_up: "次日再板", settled_date: "对账日",
+  call: "交易倾向", trigger: "触发条件", trigger_metric: "触发读数", trigger_op: "比较", trigger_value: "触发阈值",
+  breadth_pct: "广度 %", amount_yi: "两市成交额 亿", limit_up: "涨停家数", limit_down: "跌停家数",
+  // market_call 的次日涨跌停家数带 _count 后缀:裸的 next_limit_up 已被 opportunity_track 占作「次日再板」(boolean) ——
+  // 同一字段名两个语义会让页面/导出出现两个不同的数,这里从字段名起就分开
+  next_breadth_pct: "次日广度 %", next_amount_yi: "次日成交额 亿", next_limit_up_count: "次日涨停家数", next_limit_down_count: "次日跌停家数",
+  trigger_hit: "触发条件命中", basis: "依据", html_path: "全景报告",
   commission_rate: "佣金费率", commission_min: "单笔佣金最低", stamp_tax_rate: "印花税", transfer_fee_rate: "过户费",
   max_loss_per_trade_pct: "单笔最大亏损 %", max_loss_per_day_pct: "单日最大亏损 %", max_positions: "最多同时持仓",
   max_trades_per_day: "单日最多开仓", pause_after_losses: "连亏几笔后停手", max_unplanned_ratio: "计划外占比上限", equity_base: "账户规模",
@@ -99,9 +112,13 @@ export const FINANCE_ENUM_LABELS: Record<string, string> = {
   decision_point: "裁决点", falsifier: "证伪条件",
   pending: "待判", met: "已达成", broken: "已触发", dropped: "已放弃",
   open: "待办", done: "已完成",
+  planned: "待执行", executed: "已成交", abandoned: "已放弃",
   review: "复盘", highlight: "今日要点", ask: "问 Agent", debate: "多空辩论", audit: "反思审计",
   backtest: "回测", compare: "研究对比",
   opening: "期初持仓", buy: "买入", sell: "卖出", dividend: "现金分红", split: "送转 / 拆股",
+  加仓: "加仓", 持有: "持有", 减仓: "减仓", 观望: "观望",
+  偏多: "偏多", 中性: "中性", 偏空: "偏空",
+  above: "≥", below: "≤",
   ...DIRECTION_LABELS,
   ...Object.fromEntries(VERIFY_METRICS.map((m) => [m.key, m.label])),
 };
@@ -357,6 +374,57 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   },
 
   /**
+   * 交易计划:**下单之前**写下的一笔承诺。闭环断的那一环就在这里 ——
+   * 过去只剩 `journal_tag`(成交之后才补的记录),于是"这单算不算计划内"只能靠用户事后自己勾一个布尔,
+   * 交易日志也只能在**持仓之后**抱怨一句「没写计划止损」。计划先于成交存在,才有办法把
+   * 「止损写了吗 / 仓位超没超」放到**买入之前**问,而不是亏完才问。
+   * 关联方式:成交后把这条计划的 id 写进 `journal_tag.plan_id`,「交易计划」视图据此做对照。
+   * 🔴 仍然是**用户自己写的**:产品不替他生成价位建议,只把他写的原样保存、把到期 / 缺项算出来。
+   */
+  trade_plan: {
+    label: "交易计划",
+    // 和交易标注同一档:个人下单价位不让模型看见(沿用「个人交易记录不接入任何 AI」)
+    hiddenFromAssistant: true,
+    properties: {
+      symbol: REQUIRED_SYMBOL,
+      name: TEXT(40),
+      playbook: { type: "string", enum: PLAYBOOKS },
+      /** 为什么做这笔(论点);计划的地基,空着就没法事后检验"理由还在不在" */
+      thesis: TEXT(2000),
+      /**
+       * 计划入场价 / 止损价 / 目标价。
+       * 🔴 字段名刻意带 `planned_` 前缀:一是和 `journal_tag` 那套「下单时写下的」同口径,
+       *    二是本项目字段标签按**字段名全局复用** —— 裸的 `entry` 已被模式卡占作「怎么进」(正文),
+       *    复用会让价格输入框显示成「怎么进」。
+       */
+      planned_entry: { type: "number", exclusiveMinimum: 0 },
+      planned_stop: { type: "number", exclusiveMinimum: 0 },
+      planned_target: { type: "number", exclusiveMinimum: 0 },
+      /** 计划占仓 %(不是股数:同一套规矩在账户规模变了之后还成立) */
+      position_pct: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+      /** 观察条件:触发前先看这几条成立没有(最多 5 条,逼自己收敛) */
+      watch: { type: "array", maxItems: 5, items: TEXT(200) },
+      /** 下一次检查点 HH:MM;到点该计划会被顶到「今天」清单里 */
+      next_check: TIME,
+      /** 复核日 */
+      due: DATE,
+      /**
+       * 有效期:过了还没成交 = 作废(计划是有时限的念头,不是永久有效的待办)。
+       * 🔴 「已过期」是**按今天推导**出来的,不入库 —— 存成 `expired` 会越攒越多且永远不会自己变回来。
+       */
+      valid_until: DATE,
+      status: { type: "string", enum: ["planned", "executed", "abandoned"] },
+      /**
+       * 成交的那一轮(交易日志那行的 key)。计划页面上「关联这笔交易」就写它 ——
+       * 有了它,计划视图才拿得到实际成交价去做事后对照,闭环合得上。
+       */
+      round_ref: TEXT(80),
+      note: TEXT(1000),
+    },
+    required: ["symbol"],
+  },
+
+  /**
    * 交易标注(交易日志用,移植自 VA 的交易记录):给「一笔交易」(同一代码从买进到卖光的一轮,由交易流水推出)
    * 写打法、是否按计划、下单时的计划止损 / 目标、备注。成交本身只在 `trade` 里,这里不存数量和价格。
    * `trade_id` 填这一轮里任意一笔流水的 id;留空 = 没有成交明细的补记(只填盈亏 %,`date` 必填,由交易日志检查)。
@@ -371,6 +439,12 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       symbol: REQUIRED_SYMBOL,
       name: TEXT(40),
       trade_id: TEXT(80),
+      /**
+       * 这笔出自哪条计划(`trade_plan` 的 id)。**这就是闭环缺的那一环** ——
+       * 没有它,交易和计划是两张互不相识的表,`as_planned` 只能是用户自己勾的布尔、无从核对。
+       * 留空 = 没从计划来(计划视图会把它列为「待认领」候选,让用户自己挂上)。
+       */
+      plan_id: TEXT(80),
       date: DATE,
       playbook: { type: "string", enum: PLAYBOOKS },
       as_planned: { type: "boolean" },
@@ -449,5 +523,86 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       note: TEXT(1000),
     },
     required: ["title"],
+  },
+
+  /**
+   * 机会清单台账(P0「机会清单收盘落台账」):收盘后快照当日短线机会清单,次日收盘自动对账每只。
+   * 🔴 与前端 patternPrior.ts 的先验表是**两回事**:先验表(PRIOR)是写死的经验概率,存在前端;
+   *    这里存的是**本页实测**结果(收红/涨幅/再板),两者在页面上并排显示、互不覆盖。
+   * `managedWrites: true`:只由收盘快照/对账任务写入(opportunity_track.ts),通用台账接口不许改 ——
+   *    事后手改结算结果会让「实测胜率」失真。
+   * 字段口径:category/regime/seal_bucket/in_main_sector 与前端 rescoreOpportunity 同口径镜像;
+   * `pattern_confidence` 是清单自带的**原始**置信度(重打分后的在前端,不入库);
+   * `market_phase` 是 MarketPhase 六档(冰点/退潮/修复/主升/高潮/极度高潮),算不出时存空串 ——
+   *    不用 `phase` 键:它已被模式卡占作「适用的情绪阶段」(字段标签按字段名全局复用)。
+   * `settled=false` 的行只快照未结算;`next_ret`/`next_limit_up`/`settled_date` 由次日对账补齐。
+   */
+  opportunity_track: {
+    label: "机会清单台账",
+    managedWrites: true,
+    properties: {
+      date: { type: "string", format: "date" },
+      code: NONEMPTY(12),
+      name: TEXT(40),
+      boards: COUNT,
+      sector: TEXT(40),
+      seal_time: TIME,
+      pattern_type: TEXT(20),
+      pattern_confidence: { type: "integer", minimum: 0, maximum: 100 },
+      category: { type: "string", enum: ["首板", "连板", "高标"] },
+      regime: { type: "string", enum: ["情绪强", "情绪中", "情绪弱", "环境未覆盖"] },
+      seal_bucket: TEXT(20),
+      in_main_sector: { type: "boolean" },
+      market_phase: TEXT(12),
+      settled: { type: "boolean" },
+      next_ret: { type: "number" },
+      next_limit_up: { type: "boolean" },
+      settled_date: { type: "string", format: "date" },
+    },
+    required: ["date", "code", "boards", "category", "regime", "settled"],
+  },
+
+  /**
+   * 大盘判断台账:WorkBuddy 大盘全景(收盘档)的「交易倾向」快照 + 次日对账。
+   * 全景侧把结构化结论写成 `<dataRoot>/inbox/market_call/YYYY-MM-DD.json`(HTML 报告之外的机器交接件),
+   * 定时任务(16:05)扫描落账、次日收盘后对账触发条件。
+   * 🔴 与 opportunity_track 同一纪律:managedWrites 只许任务写;同日重跑幂等;
+   *    触发条件带结构化读数(threshold)+原文(trigger),机器判命中、原文留给人复核。
+   *    档位四档口径来自全景 skill §5.1;本台账只存全景产出的判断,**不由本系统生成建议**。
+   */
+  market_call: {
+    label: "大盘判断台账",
+    managedWrites: true,
+    properties: {
+      date: { type: "string", format: "date" },
+      call: { type: "string", enum: ["加仓", "持有", "减仓", "观望"] },
+      direction: { type: "string", enum: ["偏多", "中性", "偏空"] },
+      /** 一句话定性(全景报告正文的那句) */
+      basis: TEXT(120),
+      /** 触发条件原文(如「广度破 45% 转减」) */
+      trigger: TEXT(120),
+      /** 结构化触发条件:哪个读数、朝哪边、阈值多少 —— 有它机器才能判命中;缺省 = 只留原文不判 */
+      trigger_metric: { type: "string", enum: ["breadth_pct", "limit_up", "limit_down", "amount_yi"] },
+      trigger_op: { type: "string", enum: ["above", "below"] },
+      trigger_value: { type: "number" },
+      /** 写下判断那天的读数快照(对照用;广度 = 上涨家数占比 0~100) */
+      breadth_pct: { type: "number" },
+      amount_yi: { type: "number" },
+      limit_up: COUNT,
+      limit_down: COUNT,
+      /** 对账:次一交易日的同四项读数 */
+      settled: { type: "boolean" },
+      settled_date: { type: "string", format: "date" },
+      next_breadth_pct: { type: "number" },
+      next_amount_yi: { type: "number" },
+      /** 带 _count 后缀:裸的 next_limit_up 被 opportunity_track 占作「次日再板」(boolean),不共用字段名 */
+      next_limit_up_count: COUNT,
+      next_limit_down_count: COUNT,
+      /** 结构化条件命中没有(true=触发了 / false=没触发 / 缺省=判不了或没给结构化条件) */
+      trigger_hit: { type: "boolean" },
+      /** 全景 HTML 报告路径(交接件里的 html 字段;断链不拦落账) */
+      html_path: TEXT(500),
+    },
+    required: ["date", "call", "direction", "settled"],
   },
 };

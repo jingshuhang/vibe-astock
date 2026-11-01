@@ -312,14 +312,16 @@ export const FINANCE_SCHEDULE: ScheduleDef = {
       run: async (j) => (await import("./shortline/premarket.ts")).shortlinePremarket(j),
     },
     {
-      id: "shortline_close_fetch", label: "短线收盘取数", at: "15:35", defaultEnabled: true,
-      description: "A 股收盘后把当天定稿的每日情绪读数、昨日涨停股今日表现、涨停结构、事实表和连板天梯先取好存在本机:以后打开情绪历史、明日验证、涨停样本不用等,东财只留约一个月的数据也能一直攒下去。不推送消息。",
-      run: async (j) => (await import("./shortline/close_fetch.ts")).shortlineCloseFetch(j),
-    },
-    {
       id: "close_digest", label: "收盘摘要", at: "15:40", defaultEnabled: true,
       description: "A 股收盘后:主要指数涨跌、涨停 / 炸板 / 跌停家数、最高连板、主力资金净流入和净流出前三的行业、龙虎榜上榜数。只列事实。",
       run: closeDigest,
+    },
+    {
+      // 全景收盘档一般 15:00~16:00 之间跑完落件,16:05 扫描留出余量;
+      // 与「机会清单落台账」(18:45)互不依赖——读的是全景写进 inbox 的文件,不是机会清单台账
+      id: "market_call_sync", label: "大盘判断落台账", at: "16:05", defaultEnabled: true,
+      description: "把 WorkBuddy 大盘全景收盘档写进 <数据根>/inbox/market_call/ 的结构化结论(交易倾向四档+依据+触发条件)扫描落账,并对账已到期的:次一交易日的广度/成交额/涨跌停,结构化触发条件判命中。只存全景产出的判断,本系统不生成大盘建议;同日重扫幂等。",
+      run: async (j) => (await import("./market_call.ts")).marketCallJob(j),
     },
     {
       id: "watch_changes", label: "自选变化", at: "16:15", defaultEnabled: true,
@@ -331,6 +333,18 @@ export const FINANCE_SCHEDULE: ScheduleDef = {
       description: "台账里的裁决点 / 证伪条件到了日子,列出写下以来的公司公告标题(A 股),提醒回来标记兑现与否。周末到期的下一个交易日提醒。",
       // 箭头包一层:verdicts.ts 反过来引用本文件,直接写函数名在加载顺序颠倒时会读到未初始化的绑定
       run: (j) => verdictDue(j),
+    },
+    {
+      id: "shortline_close_fetch", label: "短线收盘取数", at: "18:35", defaultEnabled: true,
+      description: "A 股收盘后把当天定稿的每日情绪读数、昨日涨停股今日表现、涨停结构、事实表和连板天梯先取好存在本机:以后打开情绪历史、明日验证、涨停样本不用等,东财只留约一个月的数据也能一直攒下去。不推送消息。",
+      run: async (j) => (await import("./shortline/close_fetch.ts")).shortlineCloseFetch(j),
+    },
+    {
+      // 排在 18:35「短线收盘取数」之后:对账要读的 cn_shortline_settled 已经先取好
+      id: "opportunity_track", label: "机会清单落台账", at: "18:45", defaultEnabled: true,
+      description: "收盘后把当天的超短线机会清单(含原始置信度、类别、情绪环境、修正因子归档)快照进台账,并对账已到期的:每只补次日涨跌 % 与是否再涨停。只列事实,不推送消息。快照与对账只认收盘定稿数据;同日重跑幂等。",
+      // 动态导入:opportunity_track.ts 反过来要用本文件的 SCHEDULE_TZ / failedNote
+      run: async (j) => (await import("./shortline/opportunity_track.ts")).opportunityTrackJob(j),
     },
   ],
 };

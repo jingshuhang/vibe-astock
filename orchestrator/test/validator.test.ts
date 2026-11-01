@@ -435,9 +435,10 @@ test("report 阶段:章节 / 引用 / 状态 / gate", () => {
   writeJson(path.join(d, "calcs", "01_peg.json"), calc("peg", [{ ref_type: "evidence", ref_id: "ev-aaaaa2" }]));
   writeJson(path.join(d, "stages", "report.json"), { stage: "report", status: "complete", summary: "ok", evidence_ids: [], calculation_ids: [], gaps: [] });
   const good = "# X 研究报告 · 状态:complete\n## 结论摘要\n- 增长已兑现\n## 事实\n- 现价 943 元(ev-aaaaa2)\n## 推断\n## 估值\n- PEG 1.5(calc-0123456789abcdef)\n## 风险与反证\n## 裁决点\n## 数据缺口\n";
+  // 私人版空规则下,即使 report 含"建议建仓"也不触发 gate 错误
   fs.writeFileSync(path.join(d, "report.md"), good.replace("- 增长已兑现", "- 建议建仓"));
   let r = validateStage("report", loadRun(d));
-  assert.ok(r.errors.some((e) => e.includes("合规 gate")));
+  assert.ok(!r.errors.some((e) => e.includes("合规 gate")), "私人版空规则下不应触发 gate 错误");
   const reportId = "a".repeat(32);
   writeJson(path.join(d, "manifest.json"), { user_reports: [{ id: reportId, name: "研究.pdf", page: 3 }] });
   fs.writeFileSync(path.join(d, "report.md"), good);

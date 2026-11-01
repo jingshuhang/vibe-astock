@@ -317,14 +317,17 @@ test("最大浮盈浮亏视图:逐笔取不复权日 K(区间 = 买入到卖出)
       },
       fail: ["600036"],
     });
-    ledgerInsertMany(ctx, { kind: "trade", records: [
+    const ids = ledgerInsertMany(ctx, { kind: "trade", records: [
       fill("600519", "buy", "2026-09-14", 1000, 10), fill("600519", "sell", "2026-09-17", 1000, 11),
       fill("000001", "buy", "2026-09-18", 100, 10), fill("000001", "sell", "2026-09-18", 100, 9.8),
       fill("600000", "buy", "2026-09-18", 100, 10),
       fill("300750", "buy", "2026-09-14", 100, 10), { symbol: "300750", type: "split", date: "2026-09-15", ratio: 2 }, fill("300750", "sell", "2026-09-17", 200, 5),
       fill("830799", "buy", "2026-09-14", 100, 10), fill("830799", "sell", "2026-09-15", 100, 11),
       fill("600036", "buy", "2026-09-14", 100, 30), fill("600036", "sell", "2026-09-16", 100, 31),
-    ] });
+    ] }).map((x) => x.id);
+    // 「按计划 / 计划外」改由计划关联推导:没挂计划一律记计划外(见 rows.ts plannedFrom)。
+    // 下面要断言 600519 只有 deep_mae 一条告警,所以给它那一轮挂上计划 —— 顺带验证推导生效。
+    ledgerUpsert(ctx, { kind: "trade_plan", record: { symbol: "600519", round_ref: ids[0] } });
     const r = await journalExcursion(ctx, {}, sig, NOW);
     assert.ok(r.available, JSON.stringify(r));
     if (!r.available) return;
@@ -452,6 +455,9 @@ test("归因视图:默认用最近一个交易日的条件对账;按入场日把
       fill("601318", "buy", "2026-10-08", 100, 50),
     ] }).map((x) => x.id);
     await journalAct(ctx, { action: "tag", trade_id: ids[4], as_planned: false }, sig, NOW);
+    // 600036(ids[4])故意不挂计划 → 仍是计划外;000001 那一轮挂上 → 按计划。
+    // 这样下面 unplanned:1 才成立,同时验证「按计划」现在由关联推导、不再看勾选的布尔。
+    ledgerUpsert(ctx, { kind: "trade_plan", record: { symbol: "000001", round_ref: ids[2] } });
 
     const now = new Date("2026-10-10T08:00:00Z"); // 周六
     await assert.rejects(journalAttribution(ctx, { date: "2026-02-31" }, sig, now), (e: unknown) => e instanceof ServiceError && e.code === "bad_query");

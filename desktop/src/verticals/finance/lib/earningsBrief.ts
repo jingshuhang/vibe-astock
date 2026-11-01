@@ -1,7 +1,7 @@
 /**
  * 财报前瞻与复盘的界面数据(后端见 orchestrator/src/finance/earnings_brief.ts)。
  * 数字都是 calc 算好的:界面只照抄 display,另外只给正数补一个「+」;金额只做元 → 亿元的换算显示。
- * 只描述过去,不预测下一次;不出目标价。
+ * 只描述过去几次财报后的表现。
  */
 export type Timing = "before_open" | "during" | "after_close";
 export type Market = "CN" | "US" | "HK";
@@ -38,7 +38,7 @@ export interface EarningsBriefResult {
 /** 和后端同名同义(后端测试逐项核对) */
 export const TIMING_LABEL: Record<Timing, string> = { before_open: "开盘前发布", during: "盘中发布", after_close: "收盘后发布" };
 export const MOVE_RULE = "涨跌 = 财报后第一个交易日收盘 ÷ 前一交易日收盘 − 1,用复权价,含当天大盘涨跌";
-export const PAST_ONLY = "只描述过去几次财报后的表现,不预测下一次,不构成投资建议";
+export const PAST_ONLY = "只描述过去几次财报后的表现";
 
 /** calc 的 display 照抄;算出来的正数补「+」;没算出来返回 null(界面写「—」,不写 0) */
 export function signed(n: Num | null | undefined): string | null {

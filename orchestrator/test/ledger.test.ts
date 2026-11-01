@@ -18,6 +18,8 @@ type Prop = { type?: string; enum?: unknown[]; format?: string; minItems?: numbe
 function minimalValue(name: string, p: Prop | undefined): unknown {
   if (p?.enum) return p.enum[0];
   if (p?.type === "number" || p?.type === "integer") return 1;
+  // 布尔必填字段(机会清单台账的 settled)——不特判会掉进兜底 "x" 被校验器拒
+  if (p?.type === "boolean") return false;
   // 列表字段按 minItems 造够条数,每条再按自己的 required 造(AI 复盘的 sections 至少 1 段)
   if (p?.type === "array") return Array.from({ length: p.minItems ?? 0 }, () => minimalValue("", p.items));
   if (p?.type === "object") return minimalObject(p.required ?? [], p.properties ?? {});

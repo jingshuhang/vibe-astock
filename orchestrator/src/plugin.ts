@@ -1453,9 +1453,8 @@ function register(plugin: Plugin): void {
         throw new Error(`Plugin.gate.${k} 必须是非空字符串数组`);
       }
     }
-    // 🔴 三张表都可以为空**吗?不行**:patterns 空 = 子串一条都不拦。正则可以为空(有的垂类只用词表),
-    //    但 patterns 与 probeLine 少一个,gate 就名存实亡。
-    if (!(gg.patterns as string[]).length) throw new Error("Plugin.gate.patterns 不能是空表(等于红线失效)");
+    // 私人版:产出红线已关闭,patterns 允许为空表(空表时 gate 透传、不拦截任何产出)。
+    // 正则同样可以为空 —— 本实例两者皆为空的合法配置。
     if (!Array.isArray(gg.regexps)) throw new Error("Plugin.gate.regexps 必须是数组");
     for (const [i, r] of (gg.regexps as unknown[]).entries()) {
       if (!r || typeof r !== "object") throw new Error(`Plugin.gate.regexps[${i}] 必须是对象`);
@@ -1468,26 +1467,30 @@ function register(plugin: Plugin): void {
       //    这类规则本来也不需要全局标志,直接拒掉(审计 gate-r1-P1)。
       if (rr.re.global || rr.re.sticky) throw new Error(`Plugin.gate.regexps[${i}].re 不能带 g / y 标志(有状态,会造成交替漏报)`);
     }
-    if (typeof gg.probeLine !== "string" || !gg.probeLine.trim()) {
-      throw new Error("Plugin.gate.probeLine 必须是非空字符串(硬测试注入、必须被拦住的一行)");
+    if (typeof gg.probeLine !== "string") {
+      throw new Error("Plugin.gate.probeLine 必须是字符串");
     }
-    // ⚠️ 自检:**按真正会写进报告的那一整行**、走**真正的 gate**跑一遍,必须被拦住。
-    // 🔴 三个坑一次堵掉(审计 gate-r1 的三条 P1):
-    //    ① 自检的文本形态要与注入形态一致(锚定式规则否则会自检过、实战漏);
-    //    ② 必须经 canonicalForGate 规范化(否则规则与运行期不在同一语义域);
-    //    ③ 必须经 exemptLines(否则把注入行写进豁免表也能自检过,实战直接放行)。
-    //    ⇒ **同一个不变量只能有一个判官**:自检不再手搓匹配,直接调 complianceGate。
-    const runGate = (t: string) => complianceGate(t, gg.patterns as string[], gg.exemptLines as string[], gg.regexps as { name: string; re: RegExp }[]);
-    // 🔴 **先证明包装本身是干净的**(审计 gate-r2-P2):只查"整行被拦住"证明不了
-    //    "是 probeLine 让它被拦住的" —— 万一是固定前后缀里的某个词触发了规则,
-    //    一句完全无害的 probeLine 也能让自检通过,而硬测试从此测的是包装不是探针。
-    //    ⇒ 对照组必须先跑:中性内容套上同一层包装,应当**不**被拦。
-    const control = runGate(probeReportLine("中性对照内容"));
-    if (!control.ok) {
-      throw new Error(`探针的固定包装本身就会触发 gate(命中 ${control.hits.map((h) => h.pattern).join(" / ")}),这样自检证明不了 probeLine 有没有用`);
+    // 自检:**按真正会写进报告的那一整行**、走**真正的 gate**跑一遍,必须被拦住。
+    // 私人版 gate 已关闭(probeLine 为空):无探针可校验,跳过本段自检;
+    // 一旦有人把 probeLine 填回非空,下面这段会重新强制"探针必须被自己的 gate 拦住"。
+    if (gg.probeLine.trim()) {
+      // ⚠️ 三个坑一次堵掉(审计 gate-r1 的三条 P1):
+      //    ① 自检的文本形态要与注入形态一致(锚定式规则否则会自检过、实战漏);
+      //    ② 必须经 canonicalForGate 规范化(否则规则与运行期不在同一语义域);
+      //    ③ 必须经 exemptLines(否则把注入行写进豁免表也能自检过,实战直接放行)。
+      //    ⇒ **同一个不变量只能有一个判官**:自检不再手搓匹配,直接调 complianceGate。
+      const runGate = (t: string) => complianceGate(t, gg.patterns as string[], gg.exemptLines as string[], gg.regexps as { name: string; re: RegExp }[]);
+      // 🔴 **先证明包装本身是干净的**(审计 gate-r2-P2):只查"整行被拦住"证明不了
+      //    "是 probeLine 让它被拦住的" —— 万一是固定前后缀里的某个词触发了规则,
+      //    一句完全无害的 probeLine 也能让自检通过,而硬测试从此测的是包装不是探针。
+      //    ⇒ 对照组必须先跑:中性内容套上同一层包装,应当**不**被拦。
+      const control = runGate(probeReportLine("中性对照内容"));
+      if (!control.ok) {
+        throw new Error(`探针的固定包装本身就会触发 gate(命中 ${control.hits.map((h) => h.pattern).join(" / ")}),这样自检证明不了 probeLine 有没有用`);
+      }
+      const probeText = probeReportLine(gg.probeLine as string);
+      if (runGate(probeText).ok) throw new Error(`Plugin.gate.probeLine 拼成的注入行「${probeText}」不会被自己的 gate 拦住(那条合规硬测试会永远绿)`);
     }
-    const probeText = probeReportLine(gg.probeLine as string);
-    if (runGate(probeText).ok) throw new Error(`Plugin.gate.probeLine 拼成的注入行「${probeText}」不会被自己的 gate 拦住(那条合规硬测试会永远绿)`);
     // mentionableInStage 只有落在 patterns 里才起作用;拼错 / 改过名的词会静默失效
     for (const w of gg.mentionableInStage as string[]) {
       if (!(gg.patterns as string[]).includes(w)) throw new Error(`Plugin.gate.mentionableInStage 里的「${w}」不在 patterns 里(这条豁免静默不起作用)`);

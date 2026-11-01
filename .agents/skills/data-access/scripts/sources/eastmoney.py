@@ -855,6 +855,18 @@ def market_breadth() -> dict:
                 continue
             if -11 <= key <= 11:
                 buckets.append({"key": key, "label": _zdfb_label(key), "count": n, "_raw": ref_fb})
+    # 东财分布没取到(盘前 / push2ex 风控断连)→ 改用新浪全市场快照聚合(独立备源,不同主机)
+    if not buckets:
+        try:
+            from sources import sina
+            sina_dist = sina.sina_updown_distribution()
+            for b in (sina_dist.get("buckets") or []):
+                buckets.append({"key": b["key"], "label": b["label"], "count": b["count"], "_raw": None})
+            if not day and sina_dist.get("date"):
+                day = sina_dist["date"]
+            notes.append("东财涨跌分布没取到,改用新浪全市场快照聚合(备源)")
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"新浪备源涨跌分布也没取到({type(e).__name__})")
     buckets.sort(key=lambda b: -b["key"])
     num = lambda x: x if isinstance(x, (int, float)) and not isinstance(x, bool) else None  # noqa: E731  fltt=2 时缺值是 "-"
     try:

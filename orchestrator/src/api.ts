@@ -24,6 +24,7 @@ import { resumeUnifiedTask, runUnifiedTask } from "./task_service.ts";
 import { deepTargetResolverFor } from "./deep_target_registry.ts";
 import { notifyAction, notifyOverview, startScheduler } from "./notify.ts";
 import { runView, runViewAction } from "./views.ts";
+import { analyzeStock, type StockAnalysisResult } from "./finance/stock_analysis.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -428,6 +429,19 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         const b = await readBody(req);
         return send(res, 200, auditCheckHead(ctx, b.head));
       }
+      // ---- 个股分析（本地规则引擎，不依赖任何外部服务） ----
+      if (req.method === "POST" && url.pathname === "/analysis/stock") {
+        const b = await readBody(req);
+        const symbol = String(b?.symbol ?? "");
+        if (!symbol) return send(res, 400, { error: "missing_symbol" });
+        try {
+          const result: StockAnalysisResult = await analyzeStock(ctx, symbol);
+          return send(res, 200, result);
+        } catch (e) {
+          return send(res, 500, { error: "analysis_failed", message: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+        }
+      }
+
       return send(res, 404, { error: "not found" });
     } catch (e) {
       if (e instanceof URIError) return send(res, 400, { error: "bad_path", message: "网址编码无效，请从栏目入口重新打开" });
@@ -461,7 +475,7 @@ export function resolveToken(ctx: ServiceContext, env: NodeJS.ProcessEnv = proce
   if (env.VRA_API_TOKEN && env.VRA_API_TOKEN.length >= 16) return { token: env.VRA_API_TOKEN, source: "env", file };
   if (fs.existsSync(file)) {
     if (!fs.lstatSync(file).isFile()) throw new ServiceError("path_symlink", "api.token 不是普通文件");
-    restrictPrivateFile(file);
+    try { restrictPrivateFile(file); } catch (e) { console.error(`[api] ${e instanceof Error ? e.message : String(e)}`); }
     const t = fs.readFileSync(file, "utf8").trim();
     if (t.length >= 16) return { token: t, source: "file", file };
   }
@@ -470,7 +484,7 @@ export function resolveToken(ctx: ServiceContext, env: NodeJS.ProcessEnv = proce
   const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | NOFOLLOW_FLAG, 0o600);
   fs.writeSync(fd, token + "\n");
   fs.closeSync(fd);
-  restrictPrivateFile(file);
+  try { restrictPrivateFile(file); } catch (e) { console.error(`[api] ${e instanceof Error ? e.message : String(e)}`); }
   return { token, source: "generated", file };
 }
 

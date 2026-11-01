@@ -306,32 +306,34 @@ test("本轮资料召回集合变化时必须换新会话，旧片段不能残�
   assert.equal(calls[1]!.opts.userPrompt, "第二问", "本地 Agent 新会话不能拼入上一轮资料历史");
 });
 
-test("开场交代里不许再出现可复述的禁用词 —— 那会让模型复述后被自己的 gate 整行移除", async () => {
+test("开场交代:私人版允许出现参考性结论说明,不再列禁用词表", async () => {
   resetChatSessions();
   const calls: LocalCall[] = [];
   await chatSend({ repoRoot: REPO, dataRoot: tmp(), localAgentRunner: fakeLocal("好", calls) }, { session: "t4", message: "x", llm: CLAUDE });
   const p = calls[0]!.opts.systemPrompt;
-  // 实测过:preamble 里写"不给目标价",模型照抄一句"我不给目标价",gate 子串匹配命中 → 整行被移除
-  for (const w of ["目标价", "买卖时点", "建仓建议"]) {
-    assert.ok(!p.includes(w), `开场交代不该出现「${w}」(会被模型复述后误伤)`);
-  }
+  // 私人版:工具可给出参考性结论(买卖参考、估值锚、目标价区间、止损位等),由使用者自行决断;
+  // 开场交代里会出现"参考性结论"这类中性说明,不会再出现"禁止 XX"之类的可复述词表
+  assert.ok(p.includes("参考性"), "私人版开场交代应说明可提供参考性结论");
+  // 不再要求"不提目标价"——这是允许提及的研究维度
 });
 
-test("回答过合规 gate:命中的行被移除并计数,没命中的原样返回(两类大脑同一道 gate)", async () => {
+test("回答过合规 gate:私人版空规则下所有行原样放行,redacted=0", async () => {
   resetChatSessions();
   const root = tmp();
   const clean = await chatSend({ repoRoot: REPO, dataRoot: root, localAgentRunner: fakeLocal("这是一段只讲事实的回答。") }, { session: "g1", message: "x", llm: CLAUDE });
   assert.equal(clean.redacted, 0);
   assert.equal(clean.reply, "这是一段只讲事实的回答。");
 
+  // 私人版空规则:即使含"建仓"等词也不会被移除
   for (const opts of [{ localAgentRunner: fakeLocal("第一行是正常内容。\n建议现在建仓。\n第三行也正常。") }, { apiComplete: fakeApi("第一行是正常内容。\n建议现在建仓。\n第三行也正常。") }]) {
     resetChatSessions();
     const dirty = await chatSend({ repoRoot: REPO, dataRoot: root, ...opts }, { session: "g2", message: "x", llm: "apiComplete" in opts ? API : CLAUDE });
-    assert.equal(dirty.redacted, 1, "只移除命中的那一行");
-    assert.ok(dirty.reply.includes("第一行是正常内容。"), "干净的行要留着");
-    assert.ok(dirty.reply.includes("第三行也正常。"), "命中行之后的内容不能被连累");
-    assert.ok(!dirty.reply.includes("建仓"), "命中的动作词必须真的没了");
-    assert.ok(dirty.reply.includes("已移除"), "要显式说明这里少了东西");
+    assert.equal(dirty.redacted, 0, "私人版空规则不应移除任何行");
+    assert.ok(dirty.reply.includes("第一行是正常内容。"));
+    assert.ok(dirty.reply.includes("建议现在建仓。"));
+    assert.ok(dirty.reply.includes("第三行也正常。"));
+    // 私人版空规则下 gate 直接放行,输出中不再有"过滤规则"提示文字
+    assert.ok(!dirty.reply.includes("〔该行命中输出过滤规则"), "私人版空规则下不应出现移除提示");
   }
 });
 

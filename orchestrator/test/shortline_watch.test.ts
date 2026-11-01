@@ -205,6 +205,9 @@ test("盘中轮询:持仓 / 梯队每次现取,大票 30 秒一次;3 分钟内�
     assert.deepEqual(kinds, ["000001急拉", "600825急跌", "600825开板"].sort());
     const up = v2.alerts.find((a) => a.kind === "急拉")!;
     assert.deepEqual([up.ts, up.sources], ["10:01:30", ["持仓", "昨日1板"]]);
+    assert.deepEqual(up.sectors, ["银行"], "梯队带下来的真实行业板块接进异动");
+    const sealOpen = v2.alerts.find((a) => a.code === "600825" && a.kind === "开板")!;
+    assert.deepEqual(sealOpen.sectors, ["出版"]);
     assert.ok(quotesAsked(w).includes("600100"), "过了 30 秒大票重取");
     // 写进当天文件,后台重启后接着显示
     assert.equal(fs.readFileSync(alertsFile(ctx.dataRoot, DAY), "utf8").trim().split("\n").length, 3);

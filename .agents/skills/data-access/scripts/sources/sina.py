@@ -264,3 +264,124 @@ def sina_board_flow(board_type: str = "industry") -> dict:
                      "net": _f(x.get("netamount")), "inflow": _f(x.get("inamount")), "outflow": _f(x.get("outamount")), "net_ratio": pct(x.get("ratioamount")),
                      "leader": str(x.get("ts_name") or ""), "leader_pct": pct(x.get("ts_changeratio")), "_raw": ref})
     return {"board_type": board_type, "rows": rows}
+
+
+# ---------- 复盘备源:全市场涨跌分布(东财 getTopicZDFenBu 断连时的独立备源) ----------
+def _sina_hs_a_count() -> int:
+    """hs_a(沪深京 A 股)标的总数,用于决定要翻几页。取不到返回 0。"""
+    try:
+        t = http_get(_SINA_JSON + "Market_Center.getHQNodeStockCount", params={"node": "hs_a"}, headers=_SINA_HDR, timeout=10, ext="json").text.strip().strip('"')
+        return int(t) if t.isdigit() else 0
+    except (ValueError, OSError, RuntimeError):
+        return 0
+
+
+def _sina_dist_date() -> str:
+    """分布数据日:优先交易所日历(已开盘则今天,否则上一交易日),拿不到退回本机今天。"""
+    try:
+        from sources.astock_defaults import latest_trading_day
+        return latest_trading_day(9)
+    except Exception:  # noqa: BLE001
+        from datetime import date as _d
+        return _d.today().isoformat()
+
+
+def _is_limit(pct: float, code: str, name: str) -> bool:
+    """本地近似涨停 / 跌停判定(按代码前缀区分板块涨跌幅限制)。
+
+    主板 10% / ST 5% / 科创板·创业板 20% / 北交所 30%;阈值取限制的 98% 容错(东财对涨停池也是近似)。
+    新股上市前五日无涨跌幅限制无法识别,备源场景下少量误判可接受。
+    """
+    c = (code or "").strip()
+    up = (name or "").upper()
+    if "ST" in up:
+        lim = 5.0
+    elif c.startswith(("688", "689")):
+        lim = 20.0
+    elif c.startswith(("300", "301")):
+        lim = 20.0
+    elif c.startswith(("8", "4", "920")):
+        lim = 30.0
+    else:
+        lim = 10.0
+    return pct >= lim * 0.98 or pct <= -lim * 0.98
+
+
+def _aggregate_distribution(rows: list) -> dict:
+    """把 hs_a 全量快照(每支含 changepercent)聚合成与东财 getTopicZDFenBu 同口径的 23 档分布。纯函数,便于单测。
+
+    涨停 / 跌停按板块涨跌幅限制判定(键 11 / -11);其余按涨跌幅绝对值落到 1~10 / -1~-10 档,
+    label 直接复用东财 `_zdfb_label`,保证备源和主源产出的 buckets 键与文案完全一致,breadthFrom / MarketState 无需感知来源。
+    空档(计数为 0)不输出,与东财只回有数据的档位一致。
+    返回 {date, buckets:[{key,label,count}], source:"sina"}。
+    """
+    import math
+
+    from sources.eastmoney import _zdfb_label
+
+    counts: dict[int, int] = {}
+    for x in rows:
+        if not isinstance(x, dict):
+            continue
+        pct = _f(x.get("changepercent"))
+        if pct is None:
+            continue
+        if _is_limit(pct, str(x.get("code") or ""), str(x.get("name") or "")):
+            key = 11 if pct > 0 else -11
+        elif pct > 0.05:
+            key = 10 if pct > 9 else max(1, int(math.ceil(pct)))
+        elif pct < -0.05:
+            key = -10 if pct < -9 else -max(1, int(math.ceil(-pct)))
+        else:
+            key = 0
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        raise RuntimeError("新浪涨跌分布聚合结果为 0 家,源可能异常")
+    buckets = [
+        {"key": k, "label": _zdfb_label(k), "count": counts[k]}
+        for k in sorted(counts, reverse=True)
+    ]
+    return {"date": _sina_dist_date(), "buckets": buckets, "source": "sina"}
+
+
+def sina_updown_distribution(max_pages: int = 200) -> dict:
+    """新浪全市场涨跌分布(东财 push2ex 断连时的独立备源)。
+
+    新浪没有公开的「涨跌分布」汇总接口(CN_UpDownFlucDaytime 等 service 在新浪服务端已不存在),
+    这里从 `hs_a` 全量快照(每支 A 股的涨跌幅)本地聚合成与东财同口径的分布,供 market_breadth 在
+    push2ex 取不到时填充 buckets。
+
+    ⚠️ 一次要拉全市场(约 5500 支,新浪单页上限 100),只在东财主源失败时才走这条;
+       上游按 120s 缓存,实际频率很低。失败抛异常(交给 market_breadth 标缺口)。
+    {date, buckets:[{key,label,count}], source:"sina"}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    total = _sina_hs_a_count()
+    if not total:
+        raise RuntimeError("新浪 hs_a 家数没取到,无法聚合涨跌分布")
+    pages = min((total + 99) // 100, max_pages)
+    if pages <= 0:
+        raise RuntimeError("新浪 hs_a 页数计算异常")
+
+    def _page(p: int) -> list:
+        t = http_get(_SINA_JSON + "Market_Center.getHQNodeData",
+                     params={"page": p, "num": 100, "sort": "symbol", "asc": 1, "node": "hs_a", "symbol": "", "_s_r_a": "auto"},
+                     headers=_SINA_HDR, timeout=15, ext="json").text
+        if "[" not in t:
+            return []
+        return json.loads(t[t.index("["): t.rindex("]") + 1])
+
+    rows: list = []
+    failed = 0
+    # 并发拉页以压低延迟(本地聚合,不依赖 last_raw_ref 的上下文语义)
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = [ex.submit(_page, p) for p in range(1, pages + 1)]
+        for fu in as_completed(futs):
+            try:
+                rows.extend(fu.result() or [])
+            except Exception:  # noqa: BLE001
+                failed += 1
+    if failed and failed * 2 >= pages:
+        raise RuntimeError(f"新浪涨跌分布拉取失败过多({failed}/{pages} 页)")
+    return _aggregate_distribution(rows)
