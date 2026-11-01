@@ -1,8 +1,8 @@
 /**
- * 个股分析卡片 — 六域读数(本地规则引擎)
+ * 个股分析卡片 — 本地规则引擎算出来的读数
  *
- * 行情 / 日 K 技术面 / 估值分位 / 筹码 / 股东与事件,全部由 Vibe-AStock 自己的端点算,不依赖外部服务。
- * 按需触发的深度研判,不自动轮询。
+ * 行情 / 日 K 技术面 / 资金流向 / 估值分位 / 筹码 / 股东与事件(含杠杆资金),全部由 Vibe-AStock
+ * 自己的端点算,不依赖外部服务。按需触发的深度研判,不自动轮询。
  *
  * 🔴 「刷新」必须把 refresh 真传给后端:以前这个按钮只是把同一个请求再发一遍,
  *    命中的还是上次的快照(日 K 没有声明缓存上限时那份快照永不过期,读到过四天前的数据)。
@@ -294,7 +294,7 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
               <PercentileBar value={data.valuation.pb_percentile} />
               <KV label="PS(TTM)" value={price(data.valuation.ps_ttm)} />
               <Note>
-                {data.valuation.window.n} 个交易日（{data.valuation.window.from || "—"} ~ {data.valuation.window.to || "—"}）。
+                {data.valuation.window.from || "—"} ~ {data.valuation.window.to || "—"}。
                 {data.valuation.basis}
               </Note>
               <Note>{data.valuation.note}</Note>
@@ -309,7 +309,7 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
             <>
               <KV label="获利比例" value={frac(data.chips.profit_ratio)} />
               <KV label="平均成本" value={price(data.chips.avg_cost)} hint="元" />
-              <KV label="现价 vs 平均成本" value={pct(data.chips.above_avg_cost)}
+              <KV label="现价 vs 平均成本" value={pct(data.chips.above_avg_cost, 2)}
                 tone={data.chips.above_avg_cost === null ? undefined
                   : data.chips.above_avg_cost >= 0 ? "text-danger" : "text-success"} />
               <KV label="90% 成本区间"
@@ -350,10 +350,15 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
                     ? `${data.holders.holder_trade_latest.direction} ${pct(data.holders.holder_trade_latest.change_pct, 2)}`
                     : "—"}
                   hint={data.holders.holder_trade_latest?.date} />
-                <Note>大宗成交量按股、成交额按元(上游早期标成万股/万元,差 1e4,已修正并回归)。</Note>
+                {/* 这条注释只讲屏上真有的数:成交额按元、溢价率相对收盘价。
+                    原先写的是「成交量按股」,可成交量这一行根本没显示 —— 说明文字对不上数就是噪音 */}
+                <Note>大宗交易按笔统计;成交额是「元」口径,溢价率 = 成交价 / 当日收盘价 − 1。</Note>
                 {data.leverage && (
                   <>
-                    <p className="mt-1 text-[10px] font-medium text-muted-foreground/80">杠杆资金（两融，截至 {data.leverage.as_of}）</p>
+                    {/* 和上面的注释拉开层级:以前只加 mt-1,两段 10px 灰字连在一起,读起来像同一段 */}
+                    <p className="mt-3 border-t border-border/50 pt-2 text-[11px] font-medium text-muted-foreground">
+                      杠杆资金（两融，截至 {data.leverage.as_of}）
+                    </p>
                     <KV label="融资余额" value={amt(data.leverage.margin_balance)}
                       hint={data.leverage.balance_pct_cap === null ? undefined
                         : `占流通市值 ${data.leverage.balance_pct_cap.toFixed(2)}%`} />
@@ -451,7 +456,8 @@ export function StockAnalysisPanel({ symbol }: { symbol: string }) {
         </div>
       </div>
       <p className="mb-3 text-xs leading-5 text-muted-foreground">
-        行情 · 日 K 技术面 · 估值分位 · 筹码 · 股东与事件，六域读数各自带数据日与口径。
+        行情 · 日 K 技术面 · 资金流向 · 估值分位 · 筹码 · 股东与事件（含杠杆资金）。每一块各自带数据日与口径，
+        口径对不上的不合并 —— 同一个数只出现一次。
       </p>
 
       {error && <p role="alert" className="mb-3 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-xs text-destructive">{error}</p>}

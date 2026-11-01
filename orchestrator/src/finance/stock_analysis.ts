@@ -486,9 +486,11 @@ async function chipsOf(ctx: ServiceContext, symbol: string, refresh: boolean, p:
     cost_70: lo70 !== null && hi70 !== null ? [lo70, hi70] : null,
     peak_price: scalarNum(f.env, "chip_peak_price"),
     price_ref: priceRef,
-    // 保留 1 位小数:这是给人看的百分比,浮点尾数(10.000000000000009)不该上屏
+    // 保留 2 位小数:这是给人看的百分比,浮点尾数(10.000000000000009)不该上屏;
+    // 而且这个差值常常只有零点零几,只留 1 位会把「现价几乎等于成本」显示成 -0.1%,
+    // 跟旁边并排的现价、平均成本对不上 —— 同一个数不能有两种读法
     above_avg_cost: priceRef !== null && avgCost !== null && avgCost > 0
-      ? Math.round((priceRef / avgCost - 1) * 1000) / 10 : null,
+      ? Math.round((priceRef / avgCost - 1) * 10000) / 100 : null,
     note: str(scalar(f.env, "chip_profit_ratio")?.note) || "三角分布 + 换手衰减模型推算,不是交易所数据",
   };
 }
