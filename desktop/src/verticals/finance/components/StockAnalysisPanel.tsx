@@ -207,6 +207,12 @@ export function StockAnalysisBody({ data }: { data: StockAnalysisResult }) {
               ))}
             </div>
           )}
+          {data.main_capital.stage !== "数据不足" && (
+            <Note>
+              判定依据只有量价与位置（日 K + 行情），没有资金流数据 —— 多日资金流端点当前不可用，
+              所以这里的「主力」是量价代理，不是真有资金流向的证据。
+            </Note>
+          )}
         </div>
       </div>
 
