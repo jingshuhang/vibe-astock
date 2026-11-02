@@ -22,6 +22,11 @@
 - `scripts\\start.cmd`:同时启动本机 API 与浏览器 UI；任一进程异常退出会立即报错，按 Ctrl+C 或 UI 进程退出时会用 `taskkill /T` 收掉两棵子进程树。
   端口规则同 `scripts/start`;固定端口用 `scripts\\start.cmd -Port 6940 -ApiPort 9770`。
   `powershell.exe` 不在 PATH 时自动回退到 `%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;失败会 `pause` 住窗口,不让错误一闪而过。
+  - `-Headless`:只起后端 API,不起页面。**后台定时任务不依赖浏览器** —— 盘中 6 个时点的快照、收盘取数、盘前/收盘提醒都是 API 进程里的调度器按点跑的,所以关掉浏览器照样记录;关掉这个窗口才会停。要看界面时另开一个普通窗口(共用同一个数据根)。
+    就绪判定走 `startup_health.ts --api`:读 `.local/api.token` 带 Bearer 直连 `/health`,因为无界面时没有 Vite 代理可走。
+  - `-Prebuilt`:用 `desktop\\dist` 里打包好的页面(`vite preview`),不起开发服务器。和 `-Headless` 互斥,同时给会直接报错。
+  - `-NoOpen`:起界面但不自动开浏览器。
+  - 启动器用 `[System.Diagnostics.Process]::Start` + `ProcessStartInfo`(`UseShellExecute = $false`),不用 `Start-Process`:`Start-Process` 会把 `$env:` 复制进一个**大小写不敏感**的字典,环境里同时存在 `https_proxy` 与 `HTTPS_PROXY`(只差大小写)时直接抛「参数集不兼容」退出 —— 表现为双击一闪而过、什么都没起。CreateProcess 原生继承环境块,没有这个问题。也因为不能直跑 `.cmd`,启动器改为 `node node_modules\\vite\\bin\\vite.js`,不经 `npm.cmd`。
   - 个股页的「个股分析」(主力行为阶段 + 技术面三维评分 + 资金流向 + 估值分位 + 筹码分布 + 股东与事件 + 杠杆资金)由 Vibe-AStock 自己的规则引擎在本地计算(日 K / 腾讯批量行情 / 新浪日级资金流 / baostock 估值与筹码 / 东财股东、事件与两融),不再依赖任何外部服务,启动无需拉起别的进程。质押、解禁、大宗、增减持、两融各自 3~11 秒,默认不取,点卡片右上角「取更全」才现取。
 - `scripts\\init.ps1` / `scripts\\doctor.ps1`:PowerShell 版的同名入口，不依赖 WSL、Git Bash 或 `/bin/sh`。
 - `api.token` 会断开 NTFS ACL 继承，只授权当前 Windows 用户 SID；doctor 会读取真实 ACL，不用 Unix mode 假判。

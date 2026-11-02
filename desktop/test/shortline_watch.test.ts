@@ -218,3 +218,23 @@ test("给 AI 的竞价与盘中摘要:时点状态、竞价读数、路径、盘
     assert.match(s, /题材集中度 预期走高\(昨 40%\):只在收盘后判断/);
   });
 });
+
+test("缺拍告警:有缺口才占屏,句子要分得清「程序没在跑」和「取数失败」;老响应没有 coverage 也不炸", async () => {
+  await withRenderer(async (r) => {
+    const { IntradayView, intradaySummary } = await r.load(`${DIR}/IntradayTab.tsx`);
+    const head = "今天 6 拍存下 0 拍:09:25 / 09:35 / 10:00 没采到,那时程序还没起来(当天最早的记录在 11:30)。过了时点补不回来,缺的那几拍在路径和核验里都是空的。";
+    const gap = { expected: 6, saved: 0, failed: 0, missing: 3, upcoming: 3, skipped: 0, missed: ["09:25", "09:35", "10:00"], failed_slots: [], headline: head };
+    const t = textOf(r.html(IntradayView, { r: { ...INTRA, coverage: gap }, onCapture: null, capturing: false, captureMsg: null }));
+    assert.match(t, /缺拍:今天 6 拍存下 0 拍/);
+    assert.match(t, /那时程序还没起来\(当天最早的记录在 11:30\)/);
+    // 汇总给 AI 的那份也要带上缺口,不然模型只会看到几个空格子
+    assert.match(intradaySummary({ ...INTRA, coverage: gap }), /缺拍:今天 6 拍存下 0 拍/);
+    // 没缺口:不占屏
+    const quiet = { expected: 6, saved: 6, failed: 0, missing: 0, upcoming: 0, skipped: 0, missed: [], failed_slots: [], headline: null };
+    assert.doesNotMatch(textOf(r.html(IntradayView, { r: { ...INTRA, coverage: quiet }, onCapture: null, capturing: false, captureMsg: null })), /缺拍:/);
+    assert.doesNotMatch(intradaySummary({ ...INTRA, coverage: quiet }), /缺拍:/);
+    // 老响应 / 读旧快照时没有 coverage:不炸、也不假装有缺口
+    assert.doesNotMatch(textOf(r.html(IntradayView, { r: INTRA, onCapture: null, capturing: false, captureMsg: null })), /缺拍:/);
+    assert.doesNotMatch(intradaySummary(INTRA), /缺拍:/);
+  });
+});

@@ -393,3 +393,66 @@ test("收盘取数:五份逐个现取当天的;取到一部分照实写;全没�
     await assert.rejects(shortlineCloseFetch(job(DAY), async () => { throw new Error("断网"); }), /都没取到/);
   } finally { clean(ctx); }
 });
+
+test("缺拍:「没存到」要分得清是程序没在跑,还是跑了但那拍没成 —— 两种不能是同一句话", async () => {
+  const ctx = tmpCtx();
+  try {
+    // ① 整天一条记录都没有 = 当时程序没在跑(2026-11-02 的实况:09:25/09:35/10:00 三拍全缺)
+    const cal = fakeFetch({ fetch_trade_calendar: calEnv(true) });
+    const cold = await shortlineIntraday(ctx, {}, signal, sh("10:30"), cal.fetch);
+    assert.equal(cold.trading_day, true);
+    assert.deepEqual(cold.coverage.missed, ["09:25", "09:35", "10:00"]);
+    assert.equal(cold.coverage.saved, 0);
+    assert.equal(cold.coverage.expected, 6);
+    assert.match(cold.slots[0]!.reason!, /那天没有任何记录.*程序没在跑/);
+    assert.match(cold.coverage.headline!, /存下 0 拍.*09:25 \/ 09:35 \/ 10:00 没采到.*当时程序没在跑/);
+    assert.doesNotMatch(cold.coverage.headline!, /取数失败/, "没跑就是没跑,不能栽给取数失败");
+
+    // ② 程序 11:30 才起、11:30 那拍采到了:缺的三拍**不能**说成「程序在跑、那几拍自己没成」,
+    //    那时它还没起来。这是 2026-11-02 的实况(后端 10:32 启动,09:25~10:00 三拍全缺)。
+    const ctx2 = tmpCtx();
+    try {
+      const f2 = fakeFetch({ tx_quotes_batch: quoteEnv({ "600825": { change_pct: 2, quote_time: "20261012113003" } }) });
+      await captureSnapshot(ctx2, "11:30", signal, { fetch: f2.fetch, clock: clockSeq("11:30:20") });
+      const late = await shortlineIntraday(ctx2, {}, signal, sh("12:10"), fakeFetch({ fetch_trade_calendar: calEnv(true) }).fetch);
+      assert.deepEqual(late.coverage.missed, ["09:25", "09:35", "10:00"]);
+      assert.equal(late.coverage.saved, 1);
+      assert.match(late.slots[0]!.reason!, /那时程序还没起来\(当天最早记录 11:30\)/);
+      assert.match(late.coverage.headline!, /那时程序还没起来\(当天最早的记录在 11:30\)/);
+      assert.doesNotMatch(late.coverage.headline!, /自己没成/, "那时程序还没起来,不是「跑了没成」");
+    } finally { clean(ctx2); }
+
+    // ③ 程序一早就在跑(09:25 采到了),后面几拍却没成 —— 这种才叫「那几拍自己没成」
+    const ctx3 = tmpCtx();
+    try {
+      const f3 = fakeFetch();
+      await captureSnapshot(ctx3, "09:25", signal, { fetch: f3.fetch, clock: clockSeq("09:25:20") });
+      const warm = await shortlineIntraday(ctx3, {}, signal, sh("10:30"), fakeFetch({ fetch_trade_calendar: calEnv(true) }).fetch);
+      assert.deepEqual(warm.coverage.missed, ["09:35", "10:00"]);
+      assert.match(warm.slots[1]!.reason!, /程序在跑,这一拍没成/);
+      assert.match(warm.coverage.headline!, /09:35 \/ 10:00 没采到,程序当时在跑/);
+    } finally { clean(ctx3); }
+  } finally { clean(ctx); }
+});
+
+test("缺拍:休市不算缺口(不该报警),取数失败单独点名,待存的不算缺", async () => {
+  const ctx = tmpCtx();
+  try {
+    const shut = await shortlineIntraday(ctx, {}, signal, sh("19:50", "2026-10-10"), fakeFetch().fetch);
+    assert.equal(shut.coverage.expected, 0, "休市那一天该采 0 拍");
+    assert.equal(shut.coverage.headline, null, "休市没什么可报的");
+
+    const ctx2 = tmpCtx();
+    try {
+      // 09:25 休市跳过、09:35 取数失败、其余还没到点
+      await intradayBeat({ ctx: ctx2, signal, gate: async () => ({ status: "closed", reason: "今天不是交易日" }) }, { fetch: fakeFetch().fetch, clock: clockSeq("09:26") });
+      await intradayBeat({ ctx: ctx2, signal, gate: async () => ({ status: "open" }) }, { fetch: fakeFetch({ cn_shortline_ladder: new Error("连不上") }).fetch, clock: clockSeq("09:36") });
+      const v = await shortlineIntraday(ctx2, {}, signal, sh("09:40"), fakeFetch({ fetch_trade_calendar: calEnv(true) }).fetch);
+      assert.deepEqual(v.coverage.failed_slots, ["09:35"]);
+      assert.deepEqual(v.coverage.missed, [], "还没到窗口的不算缺");
+      assert.equal(v.coverage.upcoming, 4);
+      assert.match(v.coverage.headline!, /09:35 取数失败/);
+      assert.doesNotMatch(v.coverage.headline!, /程序没在跑/);
+    } finally { clean(ctx2); }
+  } finally { clean(ctx); }
+});

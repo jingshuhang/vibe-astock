@@ -34,9 +34,9 @@ if (!EDGE) {
   process.exit(1);
 }
 
-const [, , URL_, SELECTOR, OUT, wArg, hArg, CLICK = "", waitArg] = process.argv;
+const [, , URL_, SELECTOR, OUT, wArg, hArg, CLICK = "", waitArg, REQUIRE = ""] = process.argv;
 if (!URL_ || !SELECTOR || !OUT) {
-  console.error("用法: node scripts/ui-shot.mjs <url> <selector> <out.png> [宽] [高] [点击文字] [超时ms]");
+  console.error("用法: node scripts/ui-shot.mjs <url> <selector> <out.png> [宽] [高] [点击文字] [超时ms] [等页面出现这段文字]");
   process.exit(1);
 }
 const WIDTH = Number(wArg || 1440);
@@ -45,8 +45,9 @@ const WAIT = Number(waitArg || 30000);
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 等到元素出现、有内容、且高度连续几次不变 */
-async function settle(send, pick, budget) {
+/** 等到元素出现、有内容、且高度连续几次不变;给了 REQUIRE 还要等页面文字里出现它
+ *  (只按高度稳定会截到「等待取数中」这种骨架 —— 那时页面高度也是稳的) */
+async function settle(send, pick, budget, require = "") {
   const started = Date.now();
   let prev = -1;
   let stable = 0;
@@ -54,16 +55,17 @@ async function settle(send, pick, budget) {
     const r = await send("Runtime.evaluate", {
       expression: `(() => { const el = (${pick}); if (!el) return null;
         const b = el.getBoundingClientRect();
-        return { w: b.width, h: b.height, text: (el.innerText || "").length }; })()`,
+        const hit = ${require ? `document.body.innerText.includes(${JSON.stringify(require)})` : "true"};
+        return { w: b.width, h: b.height, text: (el.innerText || "").length, hit }; })()`,
       returnByValue: true,
     });
     const v = r.result?.result?.value;
-    if (v && v.w > 0 && v.h > 0 && v.text > 100) {
+    if (v && v.w > 0 && v.h > 0 && v.text > 100 && v.hit) {
       if (Math.abs(v.h - prev) < 2) {
         if (++stable >= 3) return v;
       } else stable = 0;
       prev = v.h;
-    }
+    } else stable = 0;
     await delay(400);
   }
   return null;
@@ -123,7 +125,7 @@ async function main() {
     ? SELECTOR.slice(3)
     : `document.querySelector(${JSON.stringify(SELECTOR)})`;
 
-  if (!await settle(send, pick, WAIT)) throw new Error(`元素没渲染出来或内容太少: ${SELECTOR}`);
+  if (!await settle(send, pick, WAIT, REQUIRE)) throw new Error(`元素没渲染出来、内容太少,或页面一直没出现「${REQUIRE}」: ${SELECTOR}`);
 
   if (CLICK) {
     const hit = await send("Runtime.evaluate", {

@@ -100,6 +100,13 @@ export interface Snapshot {
 }
 export type SlotState = "saved" | "failed" | "skipped" | "missing" | "upcoming";
 export interface SlotRow { slot: Slot; window_end: string; state: SlotState; reason: string | null; snapshot: Snapshot | null }
+/** 这一天采到几拍、缺哪几拍、为什么缺(休市跳过 / 取数失败 / 程序没在跑,三种不能混) */
+export interface SlotCoverage {
+  expected: number; saved: number; failed: number; missing: number; upcoming: number; skipped: number;
+  missed: Slot[]; failed_slots: Slot[];
+  /** 一句话说清缺口;没缺口或休市 = null */
+  headline: string | null;
+}
 export interface CheckPoint { slot: Slot; value: number | null; actual: Direction | null; actual_label: string | null; verified: boolean | null }
 export interface CheckItem {
   id: string; metric: string; label: string; unit: string; kind: ReadingKind; eps: number;
@@ -111,6 +118,8 @@ export interface IntradayResult {
   /** 这一天开不开市;null = 没查到 */
   trading_day: boolean | null;
   slots: SlotRow[];
+  /** 可选:后端一定会发;但页面是容错的读法 —— 读旧快照/老接口时没有它也不该炸 */
+  coverage?: SlotCoverage;
   auction: Snapshot | null;
   auction_reason: string | null;
   checks: { set_date: string | null; items: CheckItem[] };

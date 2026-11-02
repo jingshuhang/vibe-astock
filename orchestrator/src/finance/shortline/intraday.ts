@@ -464,6 +464,102 @@ export function slotReading(s: Snapshot, metric: string): number | null {
 export const CLOSE_ONLY = new Set(["theme_concentration"]);
 
 export interface SlotRow { slot: Slot; window_end: string; state: SlotState | "missing" | "upcoming"; reason: string | null; snapshot: Snapshot | null }
+
+/**
+ * 缺拍归因 —— 这四种**不能混成一个「没有数据」**:
+ *   · 还没到点(upcoming)        —— 正常,等它自己采
+ *   · 休市跳过(skipped)          —— 正常,本来就不该有
+ *   · 取数失败(failed)           —— 有问题,上游给了原因
+ *   · 过了窗口没采到(missing)    —— 有问题,**还要再分两种**:
+ *       程序当时在跑(当天有别的记录)  ⇒ 那一拍自己没成
+ *       整天一条记录都没有            ⇒ 程序根本没在跑
+ *   2026-11-02 就是最后这种:09:25/09:35/10:00 三拍全缺,而原来的文案把
+ *   「程序没开」和「取数失败」写成同一句「当时程序没开着、不是交易日,或取数失败」,等于什么都没说。
+ */
+/**
+ * 缺拍的两句话。**只写到「为什么」，不写「补不回来」**:
+ * 那句由上面的汇总条和竞价那处单独说一次 —— 每个格子里再复述一遍,六个格子会变成三段一样的废话。
+ */
+export const MISSING_REASON_TOUCHED = "程序在跑,这一拍没成";
+export const MISSING_REASON_COLD = "那天没有任何记录,程序没在跑";
+export const missingReasonNotUp = (hm: string): string => `那时程序还没起来(当天最早记录 ${hm})`;
+
+/**
+ * 程序那天**最早**留下记录的时刻(时点状态或快照,取最早的一条);整天没有 = null。
+ *
+ * 🔴 不能拿「当天有记录」笼统判断程序在不在跑:2026-11-02 那天,后端 10:32 才启动、
+ *    11:30 那拍采到了,于是「有记录」成立 —— 但 09:25/09:35/10:00 缺的原因是**那时程序还没起来**,
+ *    说成「程序在跑,那几拍自己没成」就是把「没跑」栽给「取数失败」。
+ *    要比的是**每拍的窗口结束时刻**和这条最早记录谁先谁后。
+ */
+export function firstRecordHm(status: Partial<Record<Slot, SlotStatus>>, snapshots: readonly Snapshot[]): string | null {
+  const stamps = [
+    ...Object.values(status).map((s) => s?.at),
+    ...snapshots.map((s) => s.captured_at),
+  ].filter((x): x is string => typeof x === "string" && Number.isFinite(Date.parse(x)));
+  if (!stamps.length) return null;
+  const first = stamps.reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b));
+  return localClock(new Date(first), SCHEDULE_TZ).hm;
+}
+
+/** 这一拍缺的时候,程序起来了吗 */
+export const missCauseOf = (slot: Slot, firstHm: string | null): "not_running" | "missed_running" =>
+  firstHm === null || firstHm > windowEnd(slot) ? "not_running" : "missed_running";
+
+/** 缺拍的说明文字:按「那会儿程序在不在」分开写,不说成一句含糊话 */
+export function missReasonOf(slot: Slot, firstHm: string | null): string {
+  if (missCauseOf(slot, firstHm) === "missed_running") return MISSING_REASON_TOUCHED;
+  return firstHm === null ? MISSING_REASON_COLD : missingReasonNotUp(firstHm);
+}
+
+export interface SlotCoverage {
+  /** 这一天该采几拍:交易日 = 6,休市 = 0 */
+  expected: number;
+  saved: number;
+  failed: number;
+  missing: number;
+  upcoming: number;
+  skipped: number;
+  /** 过了窗口还没采到的时点 */
+  missed: Slot[];
+  /** 取数失败(有上游原因)的时点 */
+  failed_slots: Slot[];
+  /** 一句话把缺口说清;没缺口 / 休市 = null */
+  headline: string | null;
+}
+
+/**
+ * 覆盖情况。**判据跟着数走**:缺了就说缺了哪几拍、当时程序在不在,不让「没有」安静地等于「正常」。
+ */
+export function coverageOf(date: string, today: boolean, closed: string | null, slots: readonly SlotRow[], firstHm: string | null): SlotCoverage {
+  const by = (st: SlotRow["state"]) => slots.filter((s) => s.state === st);
+  const missed = by("missing").map((s) => s.slot);
+  const failedSlots = by("failed").map((s) => s.slot);
+  const c: SlotCoverage = {
+    expected: closed ? 0 : SLOTS.length,
+    saved: by("saved").length,
+    failed: failedSlots.length,
+    missing: missed.length,
+    upcoming: by("upcoming").length,
+    skipped: by("skipped").length,
+    missed, failed_slots: failedSlots, headline: null,
+  };
+  if (closed) return c;
+  const parts: string[] = [];
+  const warm = missed.filter((s) => missCauseOf(s, firstHm) === "missed_running");
+  const cold = missed.filter((s) => missCauseOf(s, firstHm) === "not_running");
+  if (warm.length) parts.push(`${warm.join(" / ")} 没采到,程序当时在跑、是那几拍自己没成`);
+  if (cold.length) {
+    parts.push(firstHm === null
+      ? `${cold.join(" / ")} 没采到,那天没有任何记录、当时程序没在跑`
+      : `${cold.join(" / ")} 没采到,那时程序还没起来(当天最早的记录在 ${firstHm})`);
+  }
+  if (failedSlots.length) parts.push(`${failedSlots.join(" / ")} 取数失败(原因见各时点)`);
+  if (!parts.length) return c;
+  const when = today ? "今天" : date;
+  c.headline = `${when} ${SLOTS.length} 拍存下 ${c.saved} 拍:${parts.join(";")}。过了时点补不回来,缺的那几拍在路径和核验里都是空的。`;
+  return c;
+}
 export interface CheckPoint { slot: Slot; value: number | null; actual: Direction | null; actual_label: string | null; verified: boolean | null }
 export interface CheckItem {
   id: string; metric: string; label: string; unit: string; kind: VerifyMetric["kind"]; eps: number;
@@ -475,6 +571,8 @@ export interface IntradayView {
   /** 这一天开不开市;null = 没查到(过去的工作日不另查) */
   trading_day: boolean | null;
   slots: SlotRow[];
+  /** 这一天采到几拍、缺哪几拍、为什么缺 —— 不让缺口静默 */
+  coverage: SlotCoverage;
   /** 09:25 竞价:有快照才有 */
   auction: Snapshot | null;
   auction_reason: string | null;
@@ -486,8 +584,6 @@ export interface IntradayView {
   generated_at: string;
 }
 
-const MISSING_REASON = "这个时点没存到快照(当时程序没开着、不是交易日,或取数失败)";
-
 export async function shortlineIntraday(ctx: ServiceContext, query: Record<string, string>, signal: AbortSignal, now = new Date(), fetch: Fetch = fetchEndpoint): Promise<IntradayView> {
   const { day: today, hm } = clockOf(now);
   const date = query.date ?? today;
@@ -495,6 +591,7 @@ export async function shortlineIntraday(ctx: ServiceContext, query: Record<strin
   if (date > today) throw new ServiceError("bad_query", `${date} 还没到`);
   const { snapshots, warnings } = loadDay(ctx.dataRoot, date);
   const status = readStatus(ctx.dataRoot, date);
+  const firstHm = firstRecordHm(status, snapshots);
   const bySlot = new Map(snapshots.map((s) => [s.slot, s]));
   const tradingDay = await tradingDayOf(ctx, date, today, now.getTime(), fetch, signal);
   const closed = tradingDay === false ? (isWeekend(date) ? "周末休市" : "休市") : null;
@@ -503,16 +600,18 @@ export async function shortlineIntraday(ctx: ServiceContext, query: Record<strin
     const st = status[slot];
     const past = date < today || hm > windowEnd(slot);
     const state: SlotRow["state"] = snap ? "saved" : st && st.state !== "saved" ? st.state : closed ? "skipped" : past ? "missing" : "upcoming";
-    const reason = snap ? null : st && st.state !== "saved" ? st.reason ?? null : closed ?? (past ? MISSING_REASON : null);
+    const reason = snap ? null : st && st.state !== "saved" ? st.reason ?? null
+      : closed ?? (past ? missReasonOf(slot, firstHm) : null);
     return { slot, window_end: windowEnd(slot), state, reason, snapshot: snap };
   });
+  const coverage = coverageOf(date, date === today, closed, slots, firstHm);
 
   const auction = bySlot.get("09:25") ?? null;
   const auctionRow = slots[0]!;
   const auctionReason = auction ? null
     : closed ? `${closed},没有竞价`
     : auctionRow.state === "upcoming" ? "09:25 竞价结果出来后自动存(09:25–09:29)"
-    : `09:25 竞价快照没有:${auctionRow.reason ?? MISSING_REASON}。过了时点补不回来`;
+    : `09:25 竞价快照没有:${auctionRow.reason ?? missReasonOf("09:25", firstHm)}。过了时点补不回来`;
 
   // 盘中核验:前一晚写下的条件,逐个时点给读数(暂定)
   const gaps: string[] = [];
@@ -558,7 +657,7 @@ export async function shortlineIntraday(ctx: ServiceContext, query: Record<strin
   }
 
   return {
-    date, today: date === today, trading_day: tradingDay, slots, auction, auction_reason: auctionReason,
+    date, today: date === today, trading_day: tradingDay, slots, coverage, auction, auction_reason: auctionReason,
     checks: { set_date: setDate, items }, warnings, gaps,
     basis_labels: BASIS_LABELS, source: INTRADAY_SOURCE, generated_at: now.toISOString(),
   };

@@ -20,14 +20,30 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 test("#34 两种启动器不覆盖 Vite 的 LAN 开关，API 继续只绑定回环", () => {
   const posix = fs.readFileSync(path.join(REPO, "orchestrator/src/startup.ts"), "utf8");
   const windows = fs.readFileSync(path.join(REPO, "scripts/start.ps1"), "utf8");
+  // Windows 侧从 Start-Process 改成了 Start-ManagedProcess(见下一条测试:Start-Process 会把环境变量
+  // 复制进大小写不敏感的字典,环境里同时有 https_proxy / HTTPS_PROXY 时直接抛错)。两种写法都要认出来。
+  const uiRe = /^\s*(?:const ui =|\$ui = Start-(?:Process|ManagedProcess))/;
+  const apiRe = /^\s*(?:const api =|\$api = Start-(?:Process|ManagedProcess))/;
   for (const source of [posix, windows]) {
-    const uis = source.split("\n").filter((line) => /(?:const ui =|\$ui = Start-Process)/.test(line));
-    assert.ok(uis.length >= 1);
+    const uis = source.split("\n").filter((line) => uiRe.test(line));
+    assert.ok(uis.length >= 1, "找不到 ui 启动行");
     for (const ui of uis) assert.doesNotMatch(ui, /--host/);
-    const api = source.split("\n").find((line) => /(?:const api =|\$api = Start-Process)/.test(line));
+    const api = source.split("\n").find((line) => apiRe.test(line));
     assert.ok(api);
-    assert.match(api, /"--host", "127\.0\.0\.1"/);
+    assert.match(api, /--host["\s,]+127\.0\.0\.1/);
   }
+});
+
+test("Windows 启动器不用 Start-Process 拉长驻进程:环境里有两个只差大小写的变量时它会整脚本退出", () => {
+  // 实况:环境同时有 https_proxy 与 HTTPS_PROXY(某些客户端/脚本会这么设),
+  // Start-Process 复制 $env: 到一个大小写不敏感的字典时抛「参数集不兼容」,
+  // 表现为双击 start.cmd 一闪而过、什么都没起。CreateProcess 原生继承环境块,没有这个问题。
+  const ps = fs.readFileSync(path.join(REPO, "scripts/start.ps1"), "utf8");
+  const code = ps.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  assert.match(code, /\$api = Start-ManagedProcess/, "API 走 Start-ManagedProcess");
+  assert.doesNotMatch(code, /\$api = Start-Process|\$ui = Start-Process/, "长驻进程不许用 Start-Process");
+  assert.match(code, /\[System\.Diagnostics\.ProcessStartInfo\]|New-Object System\.Diagnostics\.ProcessStartInfo/);
+  assert.match(code, /UseShellExecute = \$false/, "不经过 shell,子进程直接继承环境块");
 });
 
 test("本机端口只有一组值:启动器、Windows 启动脚本、页面服务器、设置页提示都跟 brand.ts 走,且和 Vibe Research 错开", () => {
@@ -196,12 +212,18 @@ test("远程模式只把口令交给页面服务器：API 进程的环境里没�
 
 test("打包好的页面（免安装包）：Windows 启动器先查 desktop\\dist 再起 vite preview，工作目录是 desktop；不带 -Prebuilt 照旧走开发服务器", () => {
   const ps = fs.readFileSync(path.join(REPO, "scripts/start.ps1"), "utf8");
-  assert.match(ps, /^\ufeff(?:#[^\n]*\n)*param\(\[switch\]\$Prebuilt, \[switch\]\$NoOpen, \[int\]\$Port = 0, \[int\]\$ApiPort = 0\)\n/, "param 必须是第一条语句(前面只能有注释)");
+  assert.match(ps, /^\ufeff(?:#[^\n]*\n)*param\(\[switch\]\$Prebuilt, \[switch\]\$Headless, \[switch\]\$NoOpen, \[int\]\$Port = 0, \[int\]\$ApiPort = 0\)\n/, "param 必须是第一条语句(前面只能有注释)");
   const check = ps.indexOf('Test-Path (Join-Path $root "desktop\\dist\\index.html")');
-  const preview = ps.indexOf('$ui = Start-Process -FilePath node -ArgumentList @("node_modules\\vite\\bin\\vite.js", "preview") -WorkingDirectory (Join-Path $root "desktop")');
-  const dev = ps.indexOf('$ui = Start-Process -FilePath npm.cmd -ArgumentList @("run", "dev", "--prefix", "desktop")');
-  assert.ok(check > 0 && preview > check && dev > preview, `${check} ${preview} ${dev}`);
-  assert.ok(check < ps.indexOf("$api = Start-Process"), "缺页面时连 API 都不起");
+  assert.ok(check > 0, "要先查 desktop\\dist 里有没有打包好的页面");
+  // 起 vite 的两种方式写在同一行 if/else 里:带 -Prebuilt 是 preview(用 dist),否则是开发服务器
+  const viteLine = ps.split("\n").find((l) => l.includes("$viteArgs = if ($Prebuilt)")) ?? "";
+  assert.match(viteLine, /node_modules\\vite\\bin\\vite\.js/, "直接起 vite 入口");
+  assert.match(viteLine, /vite\.js`" preview/, "-Prebuilt 走 vite preview");
+  assert.match(viteLine, /else \{/, "不带 -Prebuilt 要有开发服务器分支");
+  assert.doesNotMatch(ps.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n"), /npm\.cmd/, "不起 npm.cmd(批处理):CreateProcess 跑不了它,套 cmd 又多一层孤儿风险");
+  const uiLine = ps.split("\n").find((l) => l.includes("$ui = Start-ManagedProcess")) ?? "";
+  assert.match(uiLine, /Join-Path \$root "desktop"/, "工作目录是 desktop");
+  assert.ok(check < ps.indexOf("$api = Start-ManagedProcess"), "缺页面时连 API 都不起");
 });
 
 test("换访问链接时旧服务还在跑:说清楚要先 Ctrl+C 停掉它,否则旧链接根本没失效", async () => {

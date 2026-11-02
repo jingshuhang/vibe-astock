@@ -257,6 +257,12 @@ export function IntradayView({ r, onCapture, capturing, captureMsg }: { r: Intra
         )}
       </div>
       {captureMsg && <p role="status" className="text-[12px] text-muted-foreground">{captureMsg}</p>}
+      {/* 缺拍告警:缺口要说出来。以前缺了三拍页面上只有几个灰格子,没人会注意到那天其实是程序没在跑 */}
+      {r.coverage?.headline && (
+        <p role="alert" className="rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2 text-[12px] leading-5 text-warning">
+          缺拍:{r.coverage.headline}
+        </p>
+      )}
       <SlotStrip slots={r.slots} />
       <Auction snap={r.auction} reason={r.auction_reason} basisLabel={r.basis_labels.open} tag={auctionTag(r)} />
       <PathTable slots={r.slots} closed={closed} today={r.today} tag={pathTag(r)} />
@@ -270,6 +276,7 @@ export function IntradayView({ r, onCapture, capturing, captureMsg }: { r: Intra
 export function intradaySummary(r: IntradayResult): string {
   const out = [`盯盘 · 竞价与盘中路径,${r.date}${r.today ? "(今天)" : ""}${r.trading_day === false ? ",休市" : ""}。`];
   out.push(`时点快照:${r.slots.map((s) => `${s.slot} ${STATE_TEXT[s.state]}${s.reason && s.state !== "saved" ? `(${s.reason})` : ""}`).join(";")}`);
+  if (r.coverage?.headline) out.push(`缺拍:${r.coverage.headline}`);
   const a = r.auction;
   if (a) {
     const c = a.cohort;

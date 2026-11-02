@@ -1,9 +1,14 @@
 ﻿# -Prebuilt:用已经打包好的页面(desktop\dist,由 vite preview 提供),不起开发服务器。免安装包用它
+# -Headless:只起后端 API,不起前端页面。后台定时任务照样按点跑(盘中快照、收盘取数都不需要浏览器),
+#           适合「关掉浏览器也让它在后台记录」;要调界面时另开一个普通窗口
 # -NoOpen:启动后不自动打开浏览器
 # -Port / -ApiPort:页面 / 本机 API 端口。默认 5940 / 8770(orchestrator/src/brand.ts 的 UI_PORT / API_PORT,和 Vibe Research 的 5930 / 8765 错开)，被占用或被系统保留时自动换一个空闲的；指定了就只用它
-param([switch]$Prebuilt, [switch]$NoOpen, [int]$Port = 0, [int]$ApiPort = 0)
+param([switch]$Prebuilt, [switch]$Headless, [switch]$NoOpen, [int]$Port = 0, [int]$ApiPort = 0)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+if ($Prebuilt -and $Headless) {
+  throw "-Prebuilt 是「用打包好的页面提供界面」,-Headless 是「不起界面」,两个放在一起没有意义。二选一。"
+}
 # 设置 Agnes AI API Key（从 WorkBuddy models.json 读取）
 if (-not $env:AGNES_API_KEY) {
   try {
@@ -38,8 +43,27 @@ $prevApiPort = $env:VRA_API_PORT
 $env:VRA_UI_PORT = "$uiPortChosen"
 $env:VRA_API_PORT = "$apiPortChosen"
 $uiUrl = "http://127.0.0.1:$uiPortChosen"
+$nodeExe = (Get-Command node -ErrorAction Stop).Source
 $api = $null
 $ui = $null
+
+# 🔴 不用 Start-Process 拉进程。
+#    PowerShell 5.1 的 Start-Process 会把 $env: 整个复制进一个**大小写不敏感**的字典,
+#    环境里只要同时存在 https_proxy 与 HTTPS_PROXY(仅大小写不同,某些客户端/脚本会这么设),
+#    它就直接抛「参数集不兼容」然后整个脚本退出 —— 表现为双击 start.cmd 一闪而过、什么都没起。
+#    [System.Diagnostics.Process]::Start 走的是 CreateProcess,子进程原生继承父进程环境块,
+#    不构造那个字典,也就没有这个撞键问题。
+function Start-ManagedProcess([string]$FileName, [string]$Arguments, [string]$WorkingDirectory) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FileName
+  $psi.Arguments = $Arguments
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  # 不重定向:子进程沿用当前控制台,日志照旧打在这个窗口里
+  $psi.CreateNoWindow = $false
+  return [System.Diagnostics.Process]::Start($psi)
+}
+
 function Stop-ProcessTree($Process) {
   if (-not $Process) { return }
   $rootId = [int]$Process.Id
@@ -70,39 +94,49 @@ function Stop-ProcessTree($Process) {
   }
 }
 try {
-  $api = Start-Process -FilePath node -ArgumentList @("orchestrator\src\api.ts", "--port", "$apiPortChosen", "--host", "127.0.0.1") -WorkingDirectory $root -PassThru -NoNewWindow
-  # UI 由 Vite 按 VRA_LAN 决定绑定；默认回环，API 的回环绑定不变。打包好的页面由 vite preview 提供，同样只听回环。
-  if ($Prebuilt) {
-    $ui = Start-Process -FilePath node -ArgumentList @("node_modules\vite\bin\vite.js", "preview") -WorkingDirectory (Join-Path $root "desktop") -PassThru -NoNewWindow
-  } else {
-    $ui = Start-Process -FilePath npm.cmd -ArgumentList @("run", "dev", "--prefix", "desktop") -WorkingDirectory $root -PassThru -NoNewWindow
+  $api = Start-ManagedProcess $nodeExe "`"orchestrator\src\api.ts`" --port $apiPortChosen --host 127.0.0.1" $root
+  if (-not $Headless) {
+    # UI 由 Vite 按 VRA_LAN 决定绑定；默认回环，API 的回环绑定不变。打包好的页面由 vite preview 提供，同样只听回环。
+    # 直接调 vite 的入口文件而不是 `npm run dev`:npm 是 npm.cmd(批处理),CreateProcess 不能直跑,
+    # 得再套一层 cmd.exe —— 多一层就多一层「杀了父进程留下孤儿子进程」的机会。
+    $viteArgs = if ($Prebuilt) { "`"node_modules\vite\bin\vite.js`" preview" } else { "`"node_modules\vite\bin\vite.js`"" }
+    $ui = Start-ManagedProcess $nodeExe $viteArgs (Join-Path $root "desktop")
   }
   $ready = $false
   $readyDeadline = [DateTime]::UtcNow.AddSeconds(60)
   while ([DateTime]::UtcNow -lt $readyDeadline) {
     $api.Refresh()
-    $ui.Refresh()
     if ($api.HasExited) { throw "API 启动失败（退出码 $($api.ExitCode)），请检查 $apiPortChosen 端口和产品配置。" }
-    if ($ui.HasExited) { throw "界面启动失败（退出码 $($ui.ExitCode)）。" }
-    # 经界面代理验证后端鉴权；令牌仍只留在本地服务，不传到浏览器或命令参数。
-    & node (Join-Path $root "orchestrator\src\startup_health.ts")
+    if ($ui) {
+      $ui.Refresh()
+      if ($ui.HasExited) { throw "界面启动失败（退出码 $($ui.ExitCode)）。" }
+      # 经界面代理验证后端鉴权；令牌仍只留在本地服务，不传到浏览器或命令参数。
+      & node (Join-Path $root "orchestrator\src\startup_health.ts")
+    } else {
+      # 无界面时没有代理可走,直连 API 验(读 .local/api.token 发 Bearer);令牌同样只留在本机
+      & node (Join-Path $root "orchestrator\src\startup_health.ts") --api
+    }
     if ($LASTEXITCODE -eq 0) { $ready = $true; break }
     Start-Sleep -Milliseconds 250
   }
   if (-not $ready) { throw "启动等待超过 60 秒。请检查上方日志、$apiPortChosen/$uiPortChosen 端口以及产品配置；浏览器尚未打开。" }
   $api.Refresh()
-  $ui.Refresh()
   if ($api.HasExited) { throw "API 启动失败（退出码 $($api.ExitCode)），请检查 $apiPortChosen 端口和产品配置。" }
-  if ($ui.HasExited) { throw "界面启动失败（退出码 $($ui.ExitCode)）。" }
-  Write-Host "`nVibe AStock 已启动:$uiUrl`n按 Ctrl+C 或关掉这个窗口即退出。"
-  if (-not $NoOpen) { Start-Process $uiUrl }
-  while (-not $api.HasExited -and -not $ui.HasExited) {
+  if ($Headless) {
+    Write-Host "`nVibe AStock 已启动(只跑后端):http://127.0.0.1:$apiPortChosen`n定时任务会按点自己跑,关掉浏览器不影响记录。界面另开一个窗口用 scripts\start.cmd。`n按 Ctrl+C 或关掉这个窗口即退出。"
+  } else {
+    $ui.Refresh()
+    if ($ui.HasExited) { throw "界面启动失败（退出码 $($ui.ExitCode)）。" }
+    Write-Host "`nVibe AStock 已启动:$uiUrl`n按 Ctrl+C 或关掉这个窗口即退出。"
+    if (-not $NoOpen) { Start-Process $uiUrl }
+  }
+  while (-not $api.HasExited -and (-not $ui -or -not $ui.HasExited)) {
     Start-Sleep -Milliseconds 250
     $api.Refresh()
-    $ui.Refresh()
+    if ($ui) { $ui.Refresh() }
   }
-  if ($api.HasExited) { throw "API 已停止（退出码 $($api.ExitCode)），界面同步关闭。" }
-  if ($ui.HasExited) { throw "界面已提前停止（退出码 $($ui.ExitCode)）。" }
+  if ($api.HasExited) { throw "API 已停止（退出码 $($api.ExitCode)）$(if ($Headless) { ",后台记录也跟着停了" } else { "，界面同步关闭" })。" }
+  if ($ui -and $ui.HasExited) { throw "界面已提前停止（退出码 $($ui.ExitCode)）。" }
 } finally {
   Stop-ProcessTree $ui
   Stop-ProcessTree $api
