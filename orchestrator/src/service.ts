@@ -34,6 +34,7 @@ import { apiCapabilityOf, apiVerificationOf, loadProviderProfile, withOutputSche
 import { REGISTRY_REL, buildStagePlan, fetchArgv, loadRegistry, type EndpointDef } from "./registry.ts";
 import { productVersion } from "./version.ts";
 import { DEFAULT_CONSISTENCY, readSnapshot, snapshotKey, snapshotUsable, writeSnapshot, type Consistency } from "./snapshot.ts";
+import { FailureMemory, failTtlMsFromEnv, failureReasonOf, recentFailureMessage, slowFailMsFromEnv } from "./failure_memory.ts";
 import { currentPlugin } from "./plugin.ts";
 import { ReportLibraryError, addReport, listReports as listStoredReports, removeReport, reportCitationErrors, reportCitations, reportContextAsync, reportFile, reportRecallPlan, reportText, type ReportRecord } from "./report_library.ts";
 import { GuidedToolError, guidedToolTurn as guidedToolTurnCore, type GuidedToolReply } from "./guided_tool.ts";
@@ -314,9 +315,16 @@ export async function fetchEndpoint(
   //    没有它,一屏五个卡片指向同一端点就会打五次上游;更糟的是**先发后回**的慢请求
   //    会把新结果覆盖成旧的(Codex 架构评审 arch-r1 §F-6)。
   const flightKey = `${ctx.dataRoot}\u0000${snapKey}`;
+  // 失败记忆:刚失败过的端点直接快失败,别让每次刷新都再等一遍超时(见 failure_memory.ts)。
+  // **刷新(fresh)必须真取** —— 用户点刷新就是不信这份缓存。
+  if (consistency.mode !== "fresh") {
+    const recent = recentFailures.recall(flightKey);
+    if (recent) throw new ServiceError("fetch_recently_failed", recentFailureMessage(ep.title || ep.id, recent));
+  }
   const flying = inFlight.get(flightKey);
   if (flying) return subscribeFlight(flying, req.signal);
   const controller = new AbortController();
+  const startedAt = Date.now();
   const run = (async (): Promise<FetchResult> => {
     const argv = fetchArgv(ep, ep.id, { scriptsDir, symbol, runDir: outDir });
     if (Object.keys(args).length) {
@@ -344,8 +352,24 @@ export async function fetchEndpoint(
     // 🔴 只有"真取到了"才写快照。判据取信封自己的 status 与证据条数 ——
     //    `failed` 或一条证据都没有,就是这次没取到,别让它变成用户下次打开看到的东西。
     const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, keepableForSnapshot);
+    const elapsed = Date.now() - t0;
+    if (isFetchFailure(result)) {
+      // 真没取到 → 记一笔(原因取端点自己写的,不编)。两条限制:
+      //  · 「取到了但声明不缓存」不算失败,记了会让整个上午都显示「不久之前失败过」;
+      //  · 只记**慢**的失败 —— 要省的是白等的那几秒,快失败再取一次本来就不贵(见 failure_memory.ts)。
+      if (elapsed >= slowFailMsFromEnv()) recentFailures.remember(flightKey, "fetch_failed", failureReasonOf(envelope));
+    } else {
+      recentFailures.forget(flightKey); // 这次成了,记忆作废(上游恢复了就别再拦)
+    }
     return snap ? { ...result, fetched_at: snap.fetched_at } : result;
-  })();
+  })().catch((e: unknown) => {
+    // 进程崩了 / 输出不是 JSON / 超时,同样记一笔(仍只记慢的),然后原样抛出去。
+    // 参数类错误不记:那是调用方写错了,不是上游抖动,记下来只会把错因说歪。
+    if (!(e instanceof ServiceError && e.code === "args_unsupported") && Date.now() - startedAt >= slowFailMsFromEnv()) {
+      recentFailures.remember(flightKey, e instanceof ServiceError ? e.code : "fetch_failed", e instanceof Error ? e.message : String(e));
+    }
+    throw e;
+  });
   const flight: FetchFlight = { promise: run, controller, subscribers: 0, remove: () => {
     if (inFlight.get(flightKey) === flight) inFlight.delete(flightKey);
   } };
@@ -367,15 +391,30 @@ export async function fetchEndpoint(
  * 信封里已经写明缺了什么(notes / missing),它仍是可用数据,不是失败。
  */
 export function keepableForSnapshot(r: FetchResult): boolean {
-  const env = r.envelope as { status?: unknown; evidence?: unknown; extra?: { no_cache?: unknown } };
-  if (r.exit_code !== 0 && r.exit_code !== 2) return false;
-  if (env.status === "failed") return false;
+  // 「没取到」这件事只认 isFetchFailure 一处判据 —— 两处各写一套,将来改一处忘另一处,
+  // 就会出现「快照说没取到、失败记忆说取到了」这种自相矛盾。
+  if (isFetchFailure(r)) return false;
   // 端点自己说「这次结果不该缓存」(例:那一天还没走完,数字当天还会变)。
   // 这条以前只写在 degraded 的中文句子里、靠 status=partial 隐式传达,于是上层只能用
   // 「partial 一律不缓存」这种粗规矩 —— 代价是 partial 但有证据的正常结果也永不缓存。
   // 现在是明确的结构化标记:该不缓存的照旧不缓存,该缓存的(常态 partial)能缓存。
-  if (env.extra?.no_cache === true) return false;
-  return Array.isArray(env.evidence) && env.evidence.length > 0;
+  const env = r.envelope as { extra?: { no_cache?: unknown } };
+  return env.extra?.no_cache !== true;
+}
+
+/**
+ * 这次是不是**真失败**(而不是「取到了但不该缓存」)。
+ *
+ * 🔴 两者要分开,别拿 `!keepableForSnapshot` 当失败判据:
+ *    `no_cache` 的结果**数据是好的**,只是不能留;把它算成失败,就会在 60 秒内被失败记忆挡住,
+ *    整个上午反复看到的都是同一句「不久之前失败过」—— 明明每次取数都成功了。
+ *    (2026-11-02 加失败记忆时正是踩了这个:4 条既有测试当场变红。)
+ */
+export function isFetchFailure(r: FetchResult): boolean {
+  const env = r.envelope as { status?: unknown; evidence?: unknown };
+  if (r.exit_code !== 0 && r.exit_code !== 2) return true;
+  if (env.status === "failed") return true;
+  return !(Array.isArray(env.evidence) && env.evidence.length > 0);
 }
 
 /**
@@ -385,6 +424,15 @@ export function keepableForSnapshot(r: FetchResult): boolean {
  */
 interface FetchFlight { promise: Promise<FetchResult>; controller: AbortController; subscribers: number; remove: () => void }
 const inFlight = new Map<string, FetchFlight>();
+
+/**
+ * 失败记忆:同一份查询刚失败过就快失败,别让每次刷新都白等一遍超时。
+ * TTL 每次现读环境变量(`VRA_FETCH_FAIL_TTL`,0 = 关),这样改配置不必重启也生效于下次判断。
+ */
+const recentFailures = new FailureMemory(() => failTtlMsFromEnv());
+
+/** 只给测试用:清空失败记忆,免得上一条测试的失败挡住下一条 */
+export function resetFailureMemory(): void { recentFailures.clear(); }
 
 /** 每个等待者独立取消;最后一个离开才停共享子进程,并立即允许新请求。 */
 function subscribeFlight(flight: FetchFlight, signal?: AbortSignal): Promise<FetchResult> {

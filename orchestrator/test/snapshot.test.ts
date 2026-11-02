@@ -173,8 +173,9 @@ test("🔴 快照键要**递归**规范化:嵌套对象键序不同是同一个�
 
 test("🔴 partial(退出码 2)只要没 failed、有证据就该留快照 —— 否则每次打开都重取", async () => {
   const { keepableForSnapshot } = await import("../src/service.ts");
-  const mk = (exit: number, status: string, evidence: unknown[], extra?: Record<string, unknown>) => ({
-    envelope: { status, evidence, ...(extra ? { extra } : {}) }, exit_code: exit, out_dir: "", duration_ms: 1, cached: false,
+  type KeepArg = Parameters<typeof keepableForSnapshot>[0];
+  const mk = (exit: number, status: string, evidence: unknown[], extra?: Record<string, unknown>): KeepArg => ({
+    envelope: { status, evidence, ...(extra ? { extra } : {}) }, exit_code: exit, out_dir: "", duration_ms: 1, stderr_tail: "", cached: false,
     fetched_at: "2026-11-02T19:00:00+08:00",
   });
 
