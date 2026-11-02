@@ -364,8 +364,15 @@ export async function fetchEndpoint(
     return snap ? { ...result, fetched_at: snap.fetched_at } : result;
   })().catch((e: unknown) => {
     // 进程崩了 / 输出不是 JSON / 超时,同样记一笔(仍只记慢的),然后原样抛出去。
-    // 参数类错误不记:那是调用方写错了,不是上游抖动,记下来只会把错因说歪。
-    if (!(e instanceof ServiceError && e.code === "args_unsupported") && Date.now() - startedAt >= slowFailMsFromEnv()) {
+    // 两类不记:
+    //  · 参数类错误(args_unsupported):那是调用方写错了,不是上游抖动,记下来只会把错因说歪。
+    //  · 客户端取消(cancelled):**这是自己人挂的电话,不是对面没接**。用户切个页面、
+    //    手快点了刷新、请求自己超时,都会走到这里。把它记成上游失败,接下来一分钟里
+    //    谁来问同一份数据都被一句「×× 秒前取数已取消」挡回去 —— 屏幕上看着像上游坏了,
+    //    实际是上一次点得太急。(2026-11-02 实测踩到:一个 3 秒就掐掉的 curl 让后续
+    //    请求连吃 52 秒闭门羹,notes 里写着「取数已取消」,像一个假故障。)
+    const selfInflicted = e instanceof ServiceError && (e.code === "args_unsupported" || e.code === "cancelled");
+    if (!selfInflicted && Date.now() - startedAt >= slowFailMsFromEnv()) {
       recentFailures.remember(flightKey, e instanceof ServiceError ? e.code : "fetch_failed", e instanceof Error ? e.message : String(e));
     }
     throw e;
