@@ -22,6 +22,8 @@ import path from "node:path";
 
 import { UI_PORT } from "./brand.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFileAsync, writeJson } from "./fsutil.ts";
+import { readHeartbeat, writeHeartbeat } from "./runlog.ts";
+import { pruneRawOncePerDay } from "./maintenance.ts";
 import { ServiceError, type ServiceContext } from "./service.ts";
 
 // ---------------------------------------------------------------- 契约
@@ -524,6 +526,8 @@ const DEDUPE_MS = 24 * 3600_000;
 
 const running = new Set<string>();
 const ticking = new Set<string>();
+/** 每拍钩子自己的单飞标记 —— 与 ticking 分开,任务队列再长也不挡它(见 runBeatOnce) */
+const beating = new Set<string>();
 
 function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>, what: string): Promise<T> {
   const ac = new AbortController();
@@ -669,8 +673,8 @@ function gateFor(ctx: ServiceContext, def: ScheduleDef, day: string, now: Date):
  * 跨进程只让一个调度在跑(同一数据目录开了两个后台时,不推两遍)。
  * 每跑一个任务前 `touch` 一下:一拍里排了几个慢任务时,锁文件不会因为太久没动被另一个进程当成死锁清掉。
  */
-function tryLock(dataRoot: string, now: Date): { unlock: () => void; touch: () => void } | null {
-  const file = notifyPath(dataRoot, "tick.lock");
+function tryLock(dataRoot: string, now: Date, name = "tick.lock", staleMs = JOB_TIMEOUT_MS * 2 + GATE_TIMEOUT_MS): { unlock: () => void; touch: () => void } | null {
+  const file = notifyPath(dataRoot, name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const token = `${process.pid}:${newId()}`;
   for (let i = 0; i < 2; i++) {
@@ -685,7 +689,7 @@ function tryLock(dataRoot: string, now: Date): { unlock: () => void; touch: () =
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       // 上次进程异常退出留下的锁:超过一个任务超时 + 门判定超时的时长还在,就当它死了
       const age = now.getTime() - fs.statSync(file).mtimeMs;
-      if (age < JOB_TIMEOUT_MS * 2 + GATE_TIMEOUT_MS) return null;
+      if (age < staleMs) return null;
       fs.rmSync(file, { force: true });
     }
   }
@@ -693,12 +697,52 @@ function tryLock(dataRoot: string, now: Date): { unlock: () => void; touch: () =
 }
 
 export interface TickReport { day: string; hm: string; due: string[]; gate?: GateResult; ran: { id: string; status: string; note?: string }[]; skipped?: string; beat?: string }
+export interface BeatReport { day: string; hm: string; beat?: string; skipped?: string }
+
+/**
+ * 跑一次「每拍钩子」(盘中快照 / 竞价这种一天几个固定时点的事)。
+ *
+ * 🔴 **必须能独立于 tick 跑**。原来的写法把钩子塞在 tick 里,tick 又是单飞的 ——
+ *    于是一个 40 分钟的 AI 周报会把整个 tick 占住,60 秒一次的下一拍直接返回
+ *    「上一拍还没结束」,期间**所有**盘中时点全部错过,而且过了 ±8 分钟就补不回来。
+ *    正常排班里 AI 任务都排在交易时段之后,看着没事;但**启动时的补跑**会把任意逾期任务拉进盘中
+ *    (周五没开、周一 09:40 才启动 → 逾期周报当场起跑 → 09:35/10:00 两拍丢)。
+ *    所以钩子用自己的锁、自己的单飞标记,任务队列再长也不挡它。
+ */
+export async function runBeatOnce(
+  ctx: ServiceContext,
+  opts: { now?: Date; def?: ScheduleDef | null } = {},
+): Promise<BeatReport> {
+  const def = opts.def === undefined ? currentSchedule() : opts.def;
+  const now = opts.now ?? new Date();
+  const { day, hm } = localClock(now, def?.timeZone ?? "UTC");
+  const report: BeatReport = { day, hm };
+  if (!def?.beat) return { ...report, skipped: "没有注册每拍钩子" };
+  if (beating.has(ctx.dataRoot)) return { ...report, skipped: "上一拍钩子还没结束" };
+  beating.add(ctx.dataRoot);
+  let lock: ReturnType<typeof tryLock> = null;
+  try {
+    // 自己的一把锁:tick 跑长任务时一直持有 tick.lock,共用就会被挡
+    lock = tryLock(ctx.dataRoot, now, "beat.lock", BEAT_TIMEOUT_MS * 2);
+    if (!lock) return { ...report, skipped: "另一个进程正在跑每拍钩子" };
+    try {
+      const note = await withTimeout(BEAT_TIMEOUT_MS, (signal) => def.beat!({ ctx, day, hm, now, signal, gate: () => gateFor(ctx, def, day, now) }), "每拍钩子");
+      if (note) report.beat = note;
+    } catch (e) {
+      report.beat = `出错:${e instanceof Error ? e.message : String(e)}`;
+    }
+    return report;
+  } finally {
+    lock?.unlock();
+    beating.delete(ctx.dataRoot);
+  }
+}
 
 /**
  * 调度一拍:把到点且今天还没跑的任务跑掉。可测 —— 传入 now 和 def 即可,不碰真时钟;
  * 要模拟队列执行中时间往前走,传 clock(每个任务开始前读一次)。
  */
-export async function tick(ctx: ServiceContext, opts: { now?: Date; clock?: () => Date; def?: ScheduleDef | null; deps?: Deps } = {}): Promise<TickReport> {
+export async function tick(ctx: ServiceContext, opts: { now?: Date; clock?: () => Date; def?: ScheduleDef | null; deps?: Deps; skipBeat?: boolean } = {}): Promise<TickReport> {
   const def = opts.def === undefined ? currentSchedule() : opts.def;
   const clock = opts.clock ?? (() => opts.now ?? new Date());
   const now = opts.now ?? clock();
@@ -711,13 +755,10 @@ export async function tick(ctx: ServiceContext, opts: { now?: Date; clock?: () =
   try {
     lock = tryLock(ctx.dataRoot, now);
     if (!lock) return { ...report, skipped: "另一个后台进程正在调度" };
-    if (def.beat) {
-      try {
-        const note = await withTimeout(BEAT_TIMEOUT_MS, (signal) => def.beat!({ ctx, day, hm, now, signal, gate: () => gateFor(ctx, def, day, now) }), "每拍钩子");
-        if (note) report.beat = note;
-      } catch (e) {
-        report.beat = `出错:${e instanceof Error ? e.message : String(e)}`;
-      }
+    if (def.beat && !opts.skipBeat) {
+      // 钩子自己拿 beat.lock(见 runBeatOnce):这里只是「顺带也跑一次」,两条路径都幂等
+      const b = await runBeatOnce(ctx, { now, def });
+      if (b.beat) report.beat = b.beat;
       lock.touch();
     }
     const settings = loadSettings(ctx.dataRoot);
@@ -775,22 +816,50 @@ export async function tick(ctx: ServiceContext, opts: { now?: Date; clock?: () =
 }
 
 let schedulerTimer: NodeJS.Timeout | null = null;
+/** 每拍钩子的定时器,与任务队列分开(见 startScheduler) */
+let beatTimer: NodeJS.Timeout | null = null;
 
 /** 后台每分钟一拍。只在 API 入口(main)启动;`VRA_SCHEDULER=off` 关闭 */
 export function startScheduler(ctx: ServiceContext, opts: { intervalMs?: number; log?: (line: string) => void } = {}): () => void {
   if (schedulerTimer) return () => undefined;
   const log = opts.log ?? ((line: string) => console.error(line));
-  const beat = () => {
-    tick(ctx).then((r) => {
-      if (r.ran.length) log(`[notify] ${r.day} ${r.hm} ${r.ran.map((x) => `${x.id}=${x.status}`).join(" ")}`);
+  const interval = opts.intervalMs ?? 60_000;
+
+  // ① 每拍钩子:独立定时器 + 独立单飞。**不受任务队列影响** —— 这是盘中快照的命门
+  const beatOnce = () => {
+    runBeatOnce(ctx).then((r) => {
       if (r.beat) log(`[notify] ${r.day} ${r.hm} ${scrubSecrets(r.beat)}`);
+      // 心跳:证明「调度器这一刻是活的」。快照缺了好判断是进程没了、还是活着但拍没成
+      writeHeartbeat(ctx.dataRoot, { at: new Date().toISOString(), pid: process.pid, day: r.day, hm: r.hm });
+      // 一天顺手做一次数据维护(raw 归档会一直长,清不动的代价是磁盘满后取数静默失败)
+      const p = pruneRawOncePerDay(ctx.dataRoot);
+      if (p && p.deleted > 0) log(`[notify] 回收 raw ${p.deleted} 个(${(p.freedBytes / 1048576).toFixed(1)}MB),仍被引用留着 ${p.keptReferenced} 个、窗口内 ${p.keptRecent} 个`);
+    }).catch((e) => log(`[notify] 每拍钩子出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
+  };
+
+  // ② 任务队列:跑到点的任务。可能跑很久(单个任务上限一小时),所以它**不能**挡住 ①
+  const runJobs = () => {
+    tick(ctx, { skipBeat: true }).then((r) => {
+      if (r.ran.length) log(`[notify] ${r.day} ${r.hm} ${r.ran.map((x) => `${x.id}=${x.status}`).join(" ")}`);
     }).catch((e) => log(`[notify] 调度出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
   };
-  const first = setTimeout(beat, 5_000);
-  schedulerTimer = setInterval(beat, opts.intervalMs ?? 60_000);
-  first.unref();
+
+  const firstBeat = setTimeout(beatOnce, 5_000);
+  const firstJobs = setTimeout(runJobs, 6_000); // 晚 1 秒:让钩子先把快照这种有时限的事占住
+  beatTimer = setInterval(beatOnce, interval);
+  schedulerTimer = setInterval(runJobs, interval);
+  firstBeat.unref();
+  firstJobs.unref();
+  beatTimer.unref();
   schedulerTimer.unref();
-  return () => { clearTimeout(first); if (schedulerTimer) clearInterval(schedulerTimer); schedulerTimer = null; };
+  return () => {
+    clearTimeout(firstBeat);
+    clearTimeout(firstJobs);
+    if (beatTimer) clearInterval(beatTimer);
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    beatTimer = null;
+    schedulerTimer = null;
+  };
 }
 
 // ---------------------------------------------------------------- 接口
@@ -807,6 +876,8 @@ export function notifyOverview(ctx: ServiceContext, opts: { def?: ScheduleDef | 
       time_zone: def?.timeZone ?? null,
       gate_note: def?.gateNote ?? "",
       gate: state.gate ?? null,
+      // 调度器活着没:最后一次每拍钩子的时间。看「某个时点为什么没采到」时先看这个
+      heartbeat: readHeartbeat(ctx.dataRoot),
       ui_base: uiBase(),
     },
     jobs: (def?.jobs ?? []).map((j) => {

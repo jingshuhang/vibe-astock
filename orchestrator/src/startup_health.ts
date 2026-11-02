@@ -6,6 +6,17 @@ import { fileURLToPath } from "node:url";
 import { API_PORT, UI_PORT } from "./brand.ts";
 import { readConfiguredDataRoot, resolveDataRoot } from "./data_root.ts";
 
+/**
+ * 页面就绪 = 首页 HTML 有挂载点、代理能连上后端、**而且入口模块真能编译出来**。
+ *
+ * 🔴 最后那一条是 2026-11-02 补的。此前只验 HTML:Vite 对 `/` 是**瞬时**返回的
+ * (index.html 直接从磁盘读),那一刻一个模块都还没编译 —— 启动器据此判定「就绪」并打开浏览器,
+ * 于是用户看到的是白屏,要等整张模块图编译完才有内容(实测冷 4748ms / 热 542ms)。
+ * 现在只有等入口模块真返回 JS,才把浏览器交出去 —— 白屏那段变成「正在启动」的等待。
+ *
+ * 开发服务器与打包页用**同一段判断**,不必额外传参:看 index.html 自己是引用 `/src/*` 还是 `/assets/*`。
+ * 打包页没有 `/src/main.tsx` 这个东西,硬去探它会让 `-Prebuilt` 永远等不到就绪。
+ */
 export async function productUiReady(baseUrl = `http://127.0.0.1:${UI_PORT}`, timeoutMs = 1_000): Promise<boolean> {
   const signal = AbortSignal.timeout(timeoutMs);
   try {
@@ -14,8 +25,34 @@ export async function productUiReady(baseUrl = `http://127.0.0.1:${UI_PORT}`, ti
     ]);
     if (!ui.ok || !api.ok || !ui.headers.get("content-type")?.includes("text/html")) return false;
     const [html, health] = await Promise.all([ui.text(), api.json()]);
-    return /<div\b[^>]*\bid=["']root["']/.test(html) && health?.ok === true &&
+    const ok = /<div\b[^>]*\bid=["']root["']/.test(html) && health?.ok === true &&
       typeof health.version === "string" && health.version.length > 0;
+    if (!ok) return false;
+    const entry = entryModuleOf(html);
+    if (!entry) return true; // 打包页:入口是静态产物,页面 200 就已经是最终状态
+    return await entryCompiles(`${baseUrl}${entry}`);
+  } catch {
+    return false;
+  }
+}
+
+/** 从 index.html 里认出开发服务器的入口模块;打包页(`/assets/*.js`)返回 null */
+export function entryModuleOf(html: string): string | null {
+  const m = /<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i.exec(html) ??
+    /<script[^>]+src=["']([^"']+)["'][^>]*>/i.exec(html);
+  const src = m?.[1] ?? "";
+  return /^\/src\/.+/.test(src) ? src : null;
+}
+
+/** 入口模块能不能真的编译出来。超时给得比别处长 —— 冷启动时 Vite 要现场转译整条依赖链 */
+async function entryCompiles(url: string): Promise<boolean> {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) return false;
+    // 必须是 JS 模块;Vite 报错时返回的是 HTML 错误页,那不算就绪
+    if (!(r.headers.get("content-type") ?? "").includes("javascript")) return false;
+    await r.text();
+    return true;
   } catch {
     return false;
   }

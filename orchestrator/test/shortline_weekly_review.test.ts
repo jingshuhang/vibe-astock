@@ -103,7 +103,7 @@ if ep=='cn_shortline_daily':
   if v is None: done({'status':'failed','reason':'东财池为空','evidence':[]},3)
   units={'broken_rate':'小数','promotion_rate':'小数','money_effect_median_ret':'%','ladder_highest':'板'}
   evs=[{'id':evid(d,k),'field':k,'value':x,'unit':units.get(k,'只'),'period':d,'raw_ref':'raw/x.json',**({'record_key':'1进2'} if k=='promotion_rate' else {})} for k,x in v.items()]
-  if d in cfg.get('unsettled',[]): done({'status':'partial','extra':{'degraded':'这一天还没收盘：本次结果不缓存','settled':False},'evidence':evs},2)
+  if d in cfg.get('unsettled',[]): done({'status':'partial','extra':{'degraded':'这一天还没收盘：本次结果不缓存','settled':False,'no_cache':True},'evidence':evs},2)
   done({'status':'ok','extra':{'settled':True},'evidence':evs})
 if ep=='cn_shortline_facts': done({'status':'failed','reason':'没有','evidence':[]},3)
 if ep=='cn_shortline_themes':

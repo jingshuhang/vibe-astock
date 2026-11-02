@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import {
   checkWebhookUrl, dingtalkSign, feishuSign, inQuietHours, localClock, maskWebhookUrl, messageText, notifyAction, notifyOverview,
-  scrubSecrets, tick, uiBase, validateSchedule, type GateResult, type JobContext, type JobResult, type ScheduleDef,
+  runBeatOnce, scrubSecrets, tick, uiBase, validateSchedule, type GateResult, type JobContext, type JobResult, type ScheduleDef,
 } from "../src/notify.ts";
 import { ServiceError, type ServiceContext } from "../src/service.ts";
 import { UI_PORT } from "../src/brand.ts";
@@ -600,4 +600,60 @@ test("🔴 队列跑过午夜就停:周五的开市判定不带到周六,剩下�
   } finally {
     clean(ctx);
   }
+});
+
+test("tick 传了 skipBeat 就不跑钩子(调度器里钩子有自己的定时器,别再跑一遍)", async () => {
+  const ctx = tmpCtx();
+  try {
+    const h = harness("15:40");
+    const seen: string[] = [];
+    const def: ScheduleDef = { ...h.def, beat: async (b) => { seen.push(b.hm); } };
+    const r = await tick(ctx, { now: sh("2026-11-02T15:40"), def, skipBeat: true });
+    assert.equal(r.beat, undefined);
+    assert.deepEqual(seen, [], "skipBeat 时钩子一次都不该被调用");
+    assert.deepEqual(r.ran.map((x) => x.id), ["digest"], "任务照跑");
+  } finally { clean(ctx); }
+});
+
+test("🔴 任务队列卡在长任务里时,盘中快照的钩子仍然跑得掉(不被 ticking 挡住)", async () => {
+  const ctx = tmpCtx();
+  try {
+    const h = harness("15:40");
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((r) => { release = r; });
+    // 模拟一个跑很久的任务(AI 周报那种):它占住 tick,但**不该**占住每一拍
+    h.setRun(async () => { await blocked; return { messages: [] }; });
+    const seen: string[] = [];
+    const def: ScheduleDef = { ...h.def, beat: async (b) => { seen.push(b.hm); return `钩子 ${b.hm} 跑了`; } };
+
+    const runningTick = tick(ctx, { now: sh("2026-11-02T15:40"), def, skipBeat: true });
+    await new Promise((r) => setTimeout(r, 30)); // 让 tick 真的进到任务里、把锁拿住
+
+    const b = await runBeatOnce(ctx, { now: sh("2026-11-02T15:41"), def });
+    assert.equal(b.beat, "钩子 15:41 跑了", "长任务占着 tick.lock 时,钩子必须还能跑");
+    assert.deepEqual(seen, ["15:41"]);
+
+    release();
+    await runningTick;
+  } finally { clean(ctx); }
+});
+
+test("同一个钩子不会被两路同时跑(beat 单飞),但上一条跑完能接着跑", async () => {
+  const ctx = tmpCtx();
+  try {
+    const h = harness("15:40");
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((r) => { release = r; });
+    const def: ScheduleDef = { ...h.def, beat: async () => { await blocked; return "第一次"; } };
+
+    const first = runBeatOnce(ctx, { now: sh("2026-11-02T15:41"), def });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await runBeatOnce(ctx, { now: sh("2026-11-02T15:41"), def });
+    assert.match(second.skipped ?? "", /还没结束/, "并发的第二路要直接让路,不能重复取数");
+    release();
+    assert.equal((await first).beat, "第一次");
+    // 跑完之后能正常再跑(单飞标记要释放,否则从此再也不采了)
+    const third = await runBeatOnce(ctx, { now: sh("2026-11-02T15:42"), def });
+    assert.equal(third.beat, "第一次");
+  } finally { clean(ctx); }
 });

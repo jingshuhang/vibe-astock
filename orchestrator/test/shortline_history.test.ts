@@ -125,7 +125,7 @@ if ep=='cn_shortline_daily':
   v=cfg.get('daily',{}).get(d)
   if v is None: done({'status':'failed','reason':'东财池为空','evidence':[]},3)
   evs=[{'field':k,'value':x,'raw_ref':'raw/x.json',**({'record_key':'1进2'} if k=='promotion_rate' else {})} for k,x in v.items()]
-  if d in cfg.get('unsettled',[]): done({'status':'partial','extra':{'degraded':'这一天还没收盘：数字收盘前还会变，本次结果不缓存','settled':False},'evidence':evs},2)
+  if d in cfg.get('unsettled',[]): done({'status':'partial','extra':{'degraded':'这一天还没收盘：数字收盘前还会变，本次结果不缓存','settled':False,'no_cache':True},'evidence':evs},2)
   done({'status':'ok','extra':{'settled':True},'evidence':evs})
 done({'status':'failed','reason':'unknown','evidence':[]},3)
 `;

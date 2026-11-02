@@ -103,7 +103,13 @@ try {
     $ui = Start-ManagedProcess $nodeExe $viteArgs (Join-Path $root "desktop")
   }
   $ready = $false
-  $readyDeadline = [DateTime]::UtcNow.AddSeconds(60)
+  # 90 秒:vite 偶尔要重新预打包依赖(30~60 秒),60 秒会把这种情况误判成失败
+  $readyDeadline = [DateTime]::UtcNow.AddSeconds(90)
+  if (-not $Headless) {
+    # 就绪判据会真的等入口模块编译完才放行(见 startup_health.ts),所以先把话说在前面,
+    # 否则那几秒黑窗口一样让人以为卡住了
+    Write-Host "正在等界面就绪(首次/改动后要编译前端,通常几秒)…"
+  }
   while ([DateTime]::UtcNow -lt $readyDeadline) {
     $api.Refresh()
     if ($api.HasExited) { throw "API 启动失败（退出码 $($api.ExitCode)），请检查 $apiPortChosen 端口和产品配置。" }
@@ -119,7 +125,7 @@ try {
     if ($LASTEXITCODE -eq 0) { $ready = $true; break }
     Start-Sleep -Milliseconds 250
   }
-  if (-not $ready) { throw "启动等待超过 60 秒。请检查上方日志、$apiPortChosen/$uiPortChosen 端口以及产品配置；浏览器尚未打开。" }
+  if (-not $ready) { throw "启动等待超过 90 秒。请检查上方日志、$apiPortChosen/$uiPortChosen 端口以及产品配置；浏览器尚未打开。" }
   $api.Refresh()
   if ($api.HasExited) { throw "API 启动失败（退出码 $($api.ExitCode)），请检查 $apiPortChosen 端口和产品配置。" }
   if ($Headless) {

@@ -170,3 +170,24 @@ test("🔴 快照键要**递归**规范化:嵌套对象键序不同是同一个�
   // 数组顺序是语义的一部分,不能一起排掉
   assert.notEqual(snapshotKey("ep", "s", { a: [1, 2] }), snapshotKey("ep", "s", { a: [2, 1] }));
 });
+
+test("🔴 partial(退出码 2)只要没 failed、有证据就该留快照 —— 否则每次打开都重取", async () => {
+  const { keepableForSnapshot } = await import("../src/service.ts");
+  const mk = (exit: number, status: string, evidence: unknown[], extra?: Record<string, unknown>) => ({
+    envelope: { status, evidence, ...(extra ? { extra } : {}) }, exit_code: exit, out_dir: "", duration_ms: 1, cached: false,
+    fetched_at: "2026-11-02T19:00:00+08:00",
+  });
+
+  assert.equal(keepableForSnapshot(mk(0, "ok", [{ id: "e1" }])), true, "正常成功要留");
+  // 这就是 em_market_trend 的样子:常态 partial,153 条证据。旧判据把它挡在缓存外,
+  // 「市场状态」页于是每次重取 15~30 秒,而它自己的 cache_max_age_sec: 300 等于没生效。
+  assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1" }])), true, "partial 有证据也要留");
+  assert.equal(keepableForSnapshot(mk(3, "failed", [{ id: "e1" }])), false, "失败不留");
+  assert.equal(keepableForSnapshot(mk(1, "error", [{ id: "e1" }])), false, "非 0/2 的退出码一律不留");
+  assert.equal(keepableForSnapshot(mk(0, "ok", [])), false, "一条证据都没有就是没取到");
+  // 端点自己声明「本次结果不缓存」(那一天还没收盘:数字收盘前还会变) —— 就算 partial 有证据也不许留,
+  // 否则整个上午都会看到同一份「上午的数字」。这条以前只藏在 degraded 的中文句子里。
+  assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1" }], { no_cache: true })), false, "声明了不缓存就不缓存");
+  assert.equal(keepableForSnapshot(mk(0, "ok", [{ id: "e1" }], { no_cache: true })), false, "就算 ok 也一样,声明优先");
+  assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1" }], { no_cache: false })), true, "显式 false 不拦");
+});

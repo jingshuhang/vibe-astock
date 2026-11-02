@@ -34,6 +34,7 @@ import { VIEWER_CSP } from "./viewer.ts";
 import { loadSavedAgentPaths } from "./local_agent_runtime.ts";
 import { updateAction, updateStatus } from "./update_check.ts";
 import { API_COOKIE, API_PORT, PRODUCT_NAME } from "./brand.ts";
+import { installRunLog } from "./runlog.ts";
 const MAX_BODY = 256 * 1024;
 
 function send(res: http.ServerResponse, code: number, body: unknown, type = "application/json; charset=utf-8", htmlCsp = HTML_CSP): void {
@@ -538,6 +539,9 @@ async function main(): Promise<void> {
   const loopback = isLoopbackHost(host);
   if (!loopback && !process.env.VRA_API_TOKEN) { console.error("[api] 非回环地址绑定必须显式设置 VRA_API_TOKEN"); process.exit(2); }
   const ctx = serviceContext();
+  // 先把控制台镜像到 .local/logs/:之后无论进程是正常退出、被关掉还是自己崩了,
+  // 盘上都有最后一段话。**必须在起调度器之前装** —— 否则启动阶段的问题留不下来。
+  installRunLog(ctx.dataRoot);
   loadSavedAgentPaths(ctx.dataRoot);
   const tk = resolveToken(ctx);
   const srv = createApiServer(ctx, { token: tk.token, cookieLogin: loopback });

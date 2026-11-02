@@ -343,10 +343,7 @@ export async function fetchEndpoint(
     const result: FetchResult = { envelope, exit_code: p.status, out_dir: rel(ctx, outDir), duration_ms: dur, stderr_tail: redact(p.stderr || "", 300), cached: false, fetched_at: nowIso() };
     // 🔴 只有"真取到了"才写快照。判据取信封自己的 status 与证据条数 ——
     //    `failed` 或一条证据都没有,就是这次没取到,别让它变成用户下次打开看到的东西。
-    const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, (r) => {
-      const env = r.envelope as { status?: unknown; evidence?: unknown };
-      return r.exit_code === 0 && env.status !== "failed" && Array.isArray(env.evidence) && env.evidence.length > 0;
-    });
+    const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, keepableForSnapshot);
     return snap ? { ...result, fetched_at: snap.fetched_at } : result;
   })();
   const flight: FetchFlight = { promise: run, controller, subscribers: 0, remove: () => {
@@ -355,6 +352,30 @@ export async function fetchEndpoint(
   inFlight.set(flightKey, flight);
   void run.then(flight.remove, flight.remove);
   return subscribeFlight(flight, req.signal);
+}
+
+/**
+ * 这次取数值不值得留成快照。
+ *
+ * 退出码约定写在 `.agents/skills/data-access/scripts/common.py`:
+ * **0 = ok,2 = partial,3 = 失败**。原来的判据是 `exit_code === 0`,等于把 partial 一律挡在缓存外 ——
+ * 后果不只是「慢」:`em_market_trend` 这种常态 partial(153 条证据)的端点**每次都要重取 15~30 秒**,
+ * 「市场状态」页连测三次 19.7 / 19.7 / 19.8 秒,而它自己声明的 `cache_max_age_sec: 300` 形同虚设;
+ * 同时每看一次页面就重新打一遍上游数据源。
+ *
+ * 所以按注释原本的意思办:**没失败、且确实有证据**就留。partial 表示「部分源没成」,
+ * 信封里已经写明缺了什么(notes / missing),它仍是可用数据,不是失败。
+ */
+export function keepableForSnapshot(r: FetchResult): boolean {
+  const env = r.envelope as { status?: unknown; evidence?: unknown; extra?: { no_cache?: unknown } };
+  if (r.exit_code !== 0 && r.exit_code !== 2) return false;
+  if (env.status === "failed") return false;
+  // 端点自己说「这次结果不该缓存」(例:那一天还没走完,数字当天还会变)。
+  // 这条以前只写在 degraded 的中文句子里、靠 status=partial 隐式传达,于是上层只能用
+  // 「partial 一律不缓存」这种粗规矩 —— 代价是 partial 但有证据的正常结果也永不缓存。
+  // 现在是明确的结构化标记:该不缓存的照旧不缓存,该缓存的(常态 partial)能缓存。
+  if (env.extra?.no_cache === true) return false;
+  return Array.isArray(env.evidence) && env.evidence.length > 0;
 }
 
 /**

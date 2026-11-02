@@ -66,6 +66,11 @@ class _Acc:
             return r
         if not settled:
             self.degraded.insert(0, _UNSETTLED)
+            # 🔴 「本次结果不缓存」过去只写在 degraded 这句人话里,靠 status=partial 传达 ——
+            #    上层于是只能靠「partial 一律不缓存」这条更粗的规矩来实现它,
+            #    连带把「partial 但有 150 条证据」的正常结果也挡在缓存外(每次重取十几秒)。
+            #    这里给一个机器可读的标记,让「不缓存」是明确说出来的,不再靠旁证。
+            extra = {**extra, "no_cache": True}
         partial = bool(self.missing or self.degraded)
         return out(self.evs, extra=extra, missing=self.missing, status="partial" if partial else None,
                    degraded="；".join(self.degraded) or None)

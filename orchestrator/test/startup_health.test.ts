@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import test from "node:test";
-import { productUiReady } from "../src/startup_health.ts";
+import { entryModuleOf, productUiReady } from "../src/startup_health.ts";
 
 test("启动就绪必须同时收到真实界面与代理后端健康状态", async (t) => {
   let phase = "cold";
@@ -59,4 +59,60 @@ test("就绪检查命令行:按 VRA_UI_PORT 查实际端口;经符号链接 / �
     assert.equal(await run(script, port), 0, `${script} 就绪`);
     assert.equal(await run(script, closed), 2, `${script} 端口没开着必须报没就绪`);
   }
+});
+
+test("🔴 首页 200 但入口模块还没编译出来 → 不算就绪(否则启动器打开的是白屏)", async (t) => {
+  let entry: "none" | "js" | "html-error" | "404" = "none";
+  const server = http.createServer((req, res) => {
+    if (req.url === "/") {
+      res.setHeader("Content-Type", "text/html");
+      res.end('<!doctype html><div id="root"></div><script type="module" src="/src/main.tsx"></script>');
+      return;
+    }
+    if (req.url === "/src/main.tsx") {
+      if (entry === "404") { res.writeHead(404); res.end(); return; }
+      if (entry === "html-error") { res.setHeader("Content-Type", "text/html"); res.end("<h1>Transform failed</h1>"); return; }
+      if (entry === "js") { res.setHeader("Content-Type", "text/javascript"); res.end("export {}"); return; }
+      return; // none:一直不返回 —— 模拟正在编译
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: true, version: "test" }));
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+  assert.equal(await productUiReady(url, 200), false, "入口还在编译就不能放行");
+  entry = "html-error";
+  assert.equal(await productUiReady(url, 200), false, "入口返回的是错误页,不是 JS");
+  entry = "404";
+  assert.equal(await productUiReady(url, 200), false, "入口 404 说明前端根本没起来");
+  entry = "js";
+  assert.equal(await productUiReady(url), true, "入口真能编译出来才算就绪");
+});
+
+test("打包页没有 /src 入口,不该去探它(否则 -Prebuilt 永远等不到就绪)", async (t) => {
+  const asked: string[] = [];
+  const server = http.createServer((req, res) => {
+    asked.push(req.url ?? "");
+    if (req.url === "/") {
+      res.setHeader("Content-Type", "text/html");
+      res.end('<!doctype html><div id="root"></div><script type="module" crossorigin src="/assets/index-a1b2c3.js"></script>');
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: true, version: "test" }));
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  assert.equal(await productUiReady(url), true);
+  assert.ok(!asked.includes("/src/main.tsx"), "打包页不该被问 /src/main.tsx");
+});
+
+test("entryModuleOf 只认开发服务器入口,别的 script 不误认", () => {
+  assert.equal(entryModuleOf('<script type="module" src="/src/main.tsx"></script>'), "/src/main.tsx");
+  assert.equal(entryModuleOf('<script type="module" src="/@vite/client"></script>'), null);
+  assert.equal(entryModuleOf('<script src="/assets/x.js"></script>'), null);
+  assert.equal(entryModuleOf("<div id=root></div>"), null);
 });
