@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import "../src/finance/register.ts";
 import "../src/finance/register_tasks.ts";
 import { FINANCE_ENUM_LABELS, FINANCE_FIELD_LABELS, FINANCE_LEDGER_KINDS } from "../src/finance/ledger_kinds.ts";
-import { INBOX_SUBDIR, judgeTrigger, marketCallJob, marketCallViewAct, parseCallJson, scanInbox, settleCalls, type CallDeps } from "../src/finance/market_call.ts";
+import { INBOX_SUBDIR, judgeTrigger, marketCallJob, marketCallViewAct, parseCallJson, parseCallText, repairLoneBackslashes, scanInbox, settleCalls, type CallDeps } from "../src/finance/market_call.ts";
 import type { LedgerRecord } from "../src/ledger.ts";
 import { ledgerList, type ServiceContext } from "../src/service.ts";
 import { listViews } from "../src/views.ts";
@@ -379,4 +379,71 @@ test("定时任务:先扫 inbox 落账、再对账到期的,一次跑完;重跑�
     assert.match(again.note, /落账 0 条/);
     assert.match(again.note, /没有到期可对账/);
   } finally { ctx.cleanup(); }
+});
+
+// ── 漏转义的反斜杠(2026-11-04 真实踩到:一份档写坏,台账静默缺一天) ──────────────
+
+test("补反斜杠:合法的一个字节都不改,合法转义原样,只补真漏掉的", () => {
+  // ① 本来合法的,输出必须与输入**逐字节相同** —— 否则这条「容错」就成了篡改数据
+  const good = JSON.stringify(callJson());
+  assert.equal(repairLoneBackslashes(good), good, "合法 JSON 不许被改动一个字节");
+  // ② 合法转义一律不动
+  for (const s of ['"\\u4e2d\\u6587"', '"a\\nb"', '"a\\tb"', '"a\\\\b"', '"a\\"b"']) {
+    assert.equal(repairLoneBackslashes(s), s, `合法转义被改了:${s}`);
+  }
+  // ③ 真漏掉的补回来(源码里 \\ 是单个反斜杠,所以下面这些是真坏文本)
+  const bad = '{"p":"C:\\Users\\51092\\Desktop\\A.html"}';
+  assert.equal(JSON.parse(repairLoneBackslashes(bad)).p, "C:\\Users\\51092\\Desktop\\A.html");
+  const badD = '{"p":"C:\\data\\x.html"}';
+  assert.equal(JSON.parse(repairLoneBackslashes(badD)).p, "C:\\data\\x.html");
+  // ④ \u 后面不是 4 位十六进制 → 同样算漏转义,而不是当成 Unicode 转义
+  const badU = '{"p":"C:\\Users"}';
+  assert.equal(JSON.parse(repairLoneBackslashes(badU)).p, "C:\\Users");
+  // ⑤ 结构性的坏不在这里修:修完还是解析不了,就老实报错
+  assert.equal(parseCallText('{"a":"b"').ok, false);
+});
+
+test("🔴 路径漏转义的档照旧落账并说明补过;结构坏的才留在原地", async () => {
+  const ctx = fakeCtx();
+  try {
+    const dir = path.join(ctx.dataRoot, INBOX_SUBDIR);
+    fs.mkdirSync(dir, { recursive: true });
+    // 模拟全景侧写坏的那一份:把合法 JSON 里的双反斜杠降成单个
+    const obj = callJson({ html_path: "C:\\Users\\51092\\Desktop\\A股大盘全景-2026-11-05.html" });
+    fs.writeFileSync(path.join(dir, "2026-11-05.json"), JSON.stringify(obj).replace(/\\\\/g, "\\"));
+    // 另一份是真坏(缺右括号)—— 这份必须留在原地等人改
+    fs.writeFileSync(path.join(dir, "2026-11-06.json"), '{"date":"2026-11-06","call":"持有"');
+
+    const out = scanInbox(ctx, new Date("2026-11-05T16:05:00+08:00"));
+    assert.equal(out.repaired, 1, "要报出「有 1 份是补过转义才解析出来的」,不能悄悄修");
+    assert.equal(out.ingested, 1, "补好的照常落账");
+    assert.equal(out.gaps.length, 1, "结构坏的仍算缺口");
+    assert.match(out.gaps[0]!, /2026-11-06\.json/);
+
+    const recs = callsOf(ctx);
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0]!.html_path, "C:\\Users\\51092\\Desktop\\A股大盘全景-2026-11-05.html", "路径要还原成完整的,不能留半截");
+
+    // 原文件(坏的也算)挪进 processed 留档,别删 —— 要能回头查到当初写坏的是什么样
+    assert.ok(fs.existsSync(path.join(dir, "processed", "2026-11-05.json")));
+    assert.ok(fs.existsSync(path.join(dir, "2026-11-06.json")), "没修的留在原地等改好");
+  } finally { ctx.cleanup(); }
+
+  // ② 再走一遍任务入口:note 里必须交代「补过转义」,
+  //    否则用户只看到「今天落账了」,不知道这天差点又静默缺一次。
+  {
+    const ctx2 = fakeCtx();
+    try {
+      const dir = path.join(ctx2.dataRoot, INBOX_SUBDIR);
+      fs.mkdirSync(dir, { recursive: true });
+      const obj = callJson({ html_path: "C:\\Users\\51092\\Desktop\\A股大盘全景-2026-11-05.html" });
+      fs.writeFileSync(path.join(dir, "2026-11-05.json"), JSON.stringify(obj).replace(/\\\\/g, "\\"));
+      const r = await marketCallJob(
+        { ctx: ctx2, now: new Date("2026-11-05T16:05:00+08:00"), signal: new AbortController().signal },
+        callDeps({ klines: null }),
+      );
+      assert.match(r.note, /落账 1 条/);
+      assert.match(r.note, /反斜杠转义/, "note 要交代补过转义");
+    } finally { ctx2.cleanup(); }
+  }
 });

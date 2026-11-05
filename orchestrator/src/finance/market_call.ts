@@ -131,6 +131,60 @@ export interface ScanOutcome {
   ingested: number;
   dates: string[];
   gaps: string[];
+  /** 有几份落件是「补过漏转义的反斜杠」才解析出来的 —— 报出来,别让修过的痕迹消失 */
+  repaired?: number;
+}
+
+/**
+ * 把 JSON 文本里**漏转义的反斜杠**补成 `\\` —— 只动这一种,别的什么都不碰。
+ *
+ * 为什么要它:全景侧写档时把 Windows 路径直接拼进了 JSON,`"C:\Users\..."` 里的 `\U`
+ * 是非法转义,`JSON.parse` 整份拒收,文件就躺在 inbox 里没人管 —— 台账「少一天」,
+ * 看着像上游没出数,实际是**一份本来能救回来的文件**(2026-11-04 真实踩到,查了半天才发现)。
+ *
+ * 只处理字符串内部;合法转义(`\" \\ \/ \b \f \n \r \t \uXXXX`)一律原样保留 ——
+ * 把一份本来就合法的 JSON 丢进来,输出与输入逐字节相同(有测试守着)。
+ * 结构性的坏(缺引号、括号不配对)不在这里修:修不了就老实报缺口,不假装能修。
+ */
+export function repairLoneBackslashes(text: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (!inStr) {
+      out += ch;
+      if (ch === '"') inStr = true;   // 进入字符串(此时还没遇到转义,所以这个引号一定是真的起始引号)
+      continue;
+    }
+    if (ch === '"') { inStr = false; out += ch; continue; }
+    if (ch !== "\\") { out += ch; continue; }
+    const next = text[i + 1];
+    if (next === undefined) { out += "\\\\"; continue; }              // 末尾孤立反斜杠
+    if (next === "u") {
+      const hex = text.slice(i + 2, i + 6);
+      if (/^[0-9a-fA-F]{4}$/.test(hex)) { out += `\\u${hex}`; i += 5; continue; } // 合法 \uXXXX
+      out += "\\\\u"; i += 1; continue;                               // \Users 这种:当漏转义
+    }
+    if ('"\\/bfnrt'.includes(next)) { out += `\\${next}`; i += 1; continue; }     // 合法转义,原样
+    out += `\\\\${next}`; i += 1;                                     // 其余一律当漏转义
+  }
+  return out;
+}
+
+/**
+ * 先按原样解析;不行就补反斜杠再试一次。
+ * `repaired` 让调用方知道这份是修过的 —— 修过不等于没发生过,该报还是要报。
+ * 报错报的是**原始**错误:修完之后的错误位置更靠后,对排查没帮助。
+ */
+export function parseCallText(text: string): { ok: true; value: unknown; repaired: boolean } | { ok: false; error: string } {
+  try { return { ok: true, value: JSON.parse(text), repaired: false }; }
+  catch (e) {
+    const fixed = repairLoneBackslashes(text);
+    if (fixed !== text) {
+      try { return { ok: true, value: JSON.parse(fixed), repaired: true }; } catch { /* 修完还是坏 → 落到下面报原始错误 */ }
+    }
+    return { ok: false, error: e instanceof Error ? e.message.slice(0, 60) : "?" };
+  }
 }
 
 /**
@@ -141,23 +195,24 @@ export function scanInbox(ctx: Pick<ServiceContext, "dataRoot">, now: Date): Sca
   const dir = path.join(ctx.dataRoot, INBOX_SUBDIR);
   const gaps: string[] = [];
   let ingested = 0;
+  let repaired = 0;
   const dates: string[] = [];
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
   } catch {
-    return { ingested, dates, gaps }; // 目录还没建:全景侧第一次落件时才有,不算缺口
+    return { ingested, dates, gaps, repaired }; // 目录还没建:全景侧第一次落件时才有,不算缺口
   }
   const doneDir = path.join(dir, PROCESSED_SUBDIR);
   for (const f of files) {
     const p = path.join(dir, f);
-    let raw: unknown;
-    try {
-      raw = JSON.parse(fs.readFileSync(p, "utf8"));
-    } catch (e) {
-      gaps.push(`${f}:JSON 解析不了(${e instanceof Error ? e.message.slice(0, 60) : "?"}),留在原地`);
+    const res = parseCallText(fs.readFileSync(p, "utf8"));
+    if (!res.ok) {
+      gaps.push(`${f}:JSON 解析不了(${res.error}),留在原地`);
       continue;
     }
+    if (res.repaired) repaired++;
+    const raw = res.value;
     const parsed = parseCallJson(raw);
     if (!parsed.ok) { gaps.push(`${f}:${parsed.why},留在原地`); continue; }
     const c = parsed.call;
@@ -185,7 +240,7 @@ export function scanInbox(ctx: Pick<ServiceContext, "dataRoot">, now: Date): Sca
     ingested++;
     dates.push(c.date);
   }
-  return { ingested, dates, gaps };
+  return { ingested, dates, gaps, repaired };
 }
 
 // ─── 次日对账 ──────────────────────────────────────────────────────────────────
@@ -522,6 +577,8 @@ export async function marketCallJob(j: { ctx: ServiceContext; now: Date; signal:
     `大盘判断台账:落账 ${scan.ingested} 条`,
     settle.settled ? `对账 ${settle.settled} 条(${settle.dates.join(",")})` : "没有到期可对账",
   ];
+  // 修过就说出来:这份落件本来会让台账静默缺一天,补齐了也不能当没发生
+  if (scan.repaired) parts.push(`其中 ${scan.repaired} 份落件的路径少了反斜杠转义(如 C:\\Users 写成了 C:\Users),已自动补齐`);
   if (gaps.length) parts.push(`缺口 ${gaps.length} 条:${gaps.slice(0, 3).join(";")}${gaps.length > 3 ? " 等" : ""}`);
   return { messages: [], note: parts.join(";") };
 }

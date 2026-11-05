@@ -328,7 +328,7 @@ export const FINANCE_SCHEDULE: ScheduleDef = {
       //    改到 18:30,给落件留 25 分钟;万一某天更晚,下次运行 scanInbox 会把积压的一起补上(幂等)。
       //    与「机会清单落台账」(18:45)互不依赖——读的是全景写进 inbox 的文件,不是机会清单台账
       id: "market_call_sync", label: "大盘判断落台账", at: "18:30", defaultEnabled: true,
-      description: "把 WorkBuddy 大盘全景收盘档写进 <数据根>/inbox/market_call/ 的结构化结论(交易倾向四档+依据+触发条件)扫描落账,并对账已到期的:次一交易日的广度/成交额/涨跌停,结构化触发条件判命中。只存全景产出的判断,本系统不生成大盘建议;同日重扫幂等。",
+      description: "把 WorkBuddy 大盘全景收盘档写进 <数据根>/inbox/market_call/ 的结构化结论(交易倾向四档+依据+触发条件)扫描落账,并对账已到期的:次一交易日的广度/成交额/涨跌停,结构化触发条件判命中。落件的 JSON 若有漏转义的反斜杠(如把 C:\\\\Users 写成 C:\\Users)会先补齐再落账,补过会在结果里说明;补不了的留在原地并报缺口。只存全景产出的判断,本系统不生成大盘建议;同日重扫幂等。",
       run: async (j) => (await import("./market_call.ts")).marketCallJob(j),
     },
     {
