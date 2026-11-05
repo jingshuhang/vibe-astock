@@ -30,6 +30,11 @@ export const MARKET_CALL_KIND = "market_call";
 export const INBOX_SUBDIR = path.join("inbox", "market_call");
 const PROCESSED_SUBDIR = "processed";
 const KLINE_MAX_AGE_MS = 10 * 60 * 100;
+/**
+ * 当天这笔对账最早几点可以做。15:00 收盘,留 30 分钟给各家源把当日数字落定。
+ * 早于这个时刻,拿到的都是盘中读数,写进去就等于把「当时的走势」当成「当天的结果」。
+ */
+const SETTLE_AFTER_HM = "15:30";
 /** 广度/趋势是当日盘后读数,收盘后 15 分钟内的缓存都算新鲜 */
 const FRESH_MAX_AGE_MS = 15 * 60 * 1000;
 const CALL_ENUM = ["加仓", "持有", "减仓", "观望"] as const;
@@ -255,7 +260,10 @@ async function readingsFor(
 
   // 成交额:趋势序列按 period 回查(东财趋势往回查得到)
   try {
-    const t = await fetcher(ctx, { endpoint: "em_market_trend", args: { days: 30 }, consistency: consistencyFor(next, oldest, false), signal });
+    // 🔴 只能要 60 天以上:底层 market_index_trend 硬校验 60~600,传 30 会被直接拒
+    //    (`ValueError: days 须在 60~600 之间`),而这里只用到对账那一天的成交额,
+    //    曾经写 30 导致每一次对账都「指数趋势没取到」—— 看着像上游坏了,其实是参数越界。
+    const t = await fetcher(ctx, { endpoint: "em_market_trend", args: { days: 60 }, consistency: consistencyFor(next, oldest, false), signal });
     const env = t.envelope as { status?: string };
     if (env?.status === "failed") gaps.push(`指数趋势没取到(${failedNote(t.envelope) || "没取到"})`);
     else {
@@ -297,6 +305,9 @@ export async function settleCalls(
   const pendingDates = [...new Set(all.filter((r) => r.settled !== true).map((r) => String(r.date)))].sort();
   if (!pendingDates.length) return { settled: 0, dates: [], gaps };
   const today = localClock(now, SCHEDULE_TZ).day;
+  // 收盘后才允许结算「今天」这一笔。15:00 收盘,留 30 分钟让各家源把当日数落定。
+  const nowHm = localClock(now, SCHEDULE_TZ).hm;
+  const closedToday = nowHm >= SETTLE_AFTER_HM;
   const oldest = retentionFloor(now);
   const fetcher = deps.fetch ?? fetchEndpoint;
 
@@ -318,6 +329,11 @@ export async function settleCalls(
       continue;
     }
     if (next > today) continue; // 对账日还没来
+    // 🔴 对账日就是今天、而今天还没收盘:此刻拿到的是**盘中读数**。
+    //    一旦写成 settled,收盘后不会再更新 —— 这条战绩就永久记在错的数上。
+    //    定时任务排在 16:05 本来碰不到,但手动运行、重启补跑都会踩到
+    //    (2026-11-05 14:21 手动跑,把 11-04 那条用盘中 82.8 结算了,事后才发现)。
+    if (next === today && !closedToday) continue;
     const r = await readingsFor(ctx, next, today, oldest, fetcher, signal);
     gaps.push(...r.gaps.map((g) => `${d}:${g}`));
     const group = all.filter((x) => x.date === d && x.settled !== true);

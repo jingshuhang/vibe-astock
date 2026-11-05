@@ -114,7 +114,7 @@ test("提醒消息:逐条写判据和期间公告,不写建议", () => {
 });
 
 test("注册:判据到期任务排在自选变化之后,视图 verdicts 可用", () => {
-  assert.deepEqual(currentSchedule()!.jobs.map((j) => [j.id, j.at]), [["shortline_premarket", "09:05"], ["close_digest", "15:40"], ["market_call_sync", "16:05"], ["watch_changes", "16:15"], ["verdict_due", "16:30"], ["shortline_close_fetch", "18:35"], ["opportunity_track", "18:45"], ["daily_review_ai", "18:55"], ["shortline_review_ai", "19:02"], ["weekly_ai_review", "19:10"]]);
+  assert.deepEqual(currentSchedule()!.jobs.map((j) => [j.id, j.at]), [["shortline_premarket", "09:05"], ["close_digest", "15:40"], ["market_call_sync", "18:30"], ["watch_changes", "16:15"], ["verdict_due", "16:30"], ["shortline_close_fetch", "18:35"], ["opportunity_track", "18:45"], ["daily_review_ai", "18:55"], ["shortline_review_ai", "19:02"], ["weekly_ai_review", "19:10"]]);
   assert.ok(listViews().some((v) => v.id === "verdicts"));
 });
 

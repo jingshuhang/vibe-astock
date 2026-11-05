@@ -322,9 +322,12 @@ export const FINANCE_SCHEDULE: ScheduleDef = {
       run: closeDigest,
     },
     {
-      // 全景收盘档一般 15:00~16:00 之间跑完落件,16:05 扫描留出余量;
-      // 与「机会清单落台账」(18:45)互不依赖——读的是全景写进 inbox 的文件,不是机会清单台账
-      id: "market_call_sync", label: "大盘判断落台账", at: "16:05", defaultEnabled: true,
+      // 🔴 实测:全景收盘档是 **18:05 左右**落件(11-02 18:07 / 11-03 18:06 / 11-04 18:05),
+      //    不是这里原先假设的 15:00~16:00。原时刻 16:05 让这个任务**永远跑在落件之前** ——
+      //    11-04 那一档就这样在 inbox 里躺了一整天没被扫描,台账里看着像"少了一天"。
+      //    改到 18:30,给落件留 25 分钟;万一某天更晚,下次运行 scanInbox 会把积压的一起补上(幂等)。
+      //    与「机会清单落台账」(18:45)互不依赖——读的是全景写进 inbox 的文件,不是机会清单台账
+      id: "market_call_sync", label: "大盘判断落台账", at: "18:30", defaultEnabled: true,
       description: "把 WorkBuddy 大盘全景收盘档写进 <数据根>/inbox/market_call/ 的结构化结论(交易倾向四档+依据+触发条件)扫描落账,并对账已到期的:次一交易日的广度/成交额/涨跌停,结构化触发条件判命中。只存全景产出的判断,本系统不生成大盘建议;同日重扫幂等。",
       run: async (j) => (await import("./market_call.ts")).marketCallJob(j),
     },
