@@ -121,6 +121,13 @@
   - ⑤ `day_opportunity.ts` 的 `packageHistory(...).catch(() => [])` 把具体异常吞成一句通用 gap。现在记下 `histError` 并附进 gap（`具体失败：…`），能看出是哪个环节挂了。
 - **文档口径统一**（不改代码行为）：README 原来只写「raw 超过 14 天删除、被引用的不删」，`VRA_RAW_KEEP_DAYS` 被当成全局开关；实际是**两套回收、清不同目录** —— `runs/<run>/raw/` 研究证据（14 天 / 有引用保护 / `VRA_RAW_KEEP_DAYS` / 调度器每天跑）与 `mcp/<session>/raw/` 取数缓存（30 天 / 只按 mtime / `VRA_RAW_RETENTION_DAYS` / 每次 `POST /fetch` 顺带）。改成并列写清，另补三处容易读错的分工：`test:delta` 是本机增量门禁、只覆盖 orchestrator 且 CI 不跑它（基线含本机沙箱专属失败）；CI 跑全量；`desktop/tsconfig.json` 不含 `test/`，typecheck 不检查测试文件。
 
+- **复核 45 条失败基线，并修掉增量门禁的一处假绿口子**（2026-11-07）。
+  - 逐条单跑 5 条 `flaky:true`：`earnings_brief`、`local_agent_runtime`、`service_api_mcp :: 请求体上限`、`shortline_samples` 四条通过；**`service_api_mcp.test.ts :: 断开 /debate 取数请求会结束子进程…` 单跑仍红（`not ok 8`）**，而它的 `cause` 是 `flaky-load`、err 写着「并行跑红、单独复跑通过」—— **归类与事实不符**。错误文本没取到：单跑过程中沙箱拦了 `reg.exe`（程序黑名单），按安全策略不重试，**标「待验证」，不猜原因**。
+  - 另两条 `code-or-unclear`（`earnings_brief`、`shortline_samples`）单跑都通过，但 err 只有「没抓到过错误文本」—— 说明不了「曾经为什么红」。这是**诚实留白**，不是已排除问题。
+  - **没有改 `known-failures.json`**：它是 `--update-baseline` 的生成物，手改会被下次重建覆盖；改归类属于口径变更。建议下次重建时把 `断开 /debate` 归到 `env-*` 并去掉 `flaky:true`（先确认是否沙箱 / 无真实 AI 所致）。`generatedAt` 仍是 2026-11-01，复核后没有伪造新时间戳。
+  - 🔴 **真 bug（已修）**：`test-delta.mjs` 对「疑似新增失败」单独重跑时只取 `results`（失败列表），**丢掉 `files`（这次真跑过的文件）**。单跑匹配不到文件 / 进程异常时两者都为空 → 所有候选被判成「单独通过、负载偶发」，真实回归整批标 flaky、**退出码假 0**。现在用 `reranFiles` 确认覆盖，没覆盖的进 `uncovered`、保留为新增失败并在报告里显式列出。`test_delta_guard.test.ts` 用真实子进程证明空集合确实会出现（拼错 `--only` 时 `files=[]` 且 `results=[]`），并钉住旧写法不许回退。
+  - **另有两处口子，本轮只记录、不自动改**（改的是工具契约、影响日常操作，需拍板）：① `--flaky "文件::用例名"` 在基线里没匹配到时会**凭空新增**一条 `flaky:true`，不验证文件 / 用例是否存在、也不跑测试；报告里又主动提示这条命令，两者合起来是把一条真实回归洗进基线的最短路径。② `--update-baseline` 用「当前所有失败」覆盖基线，没有「本次新增失败需二次确认」的护栏。
+
 ### 变更
 
 - **`orchestrator/gate_probe.tmp.ts` 转正为 `orchestrator/scripts/gate_probe.ts`**（原文件已删，内容完整迁移并增强，无资产损失）。原来写死 `../.local/snapshots`、必须从 `orchestrator/` 目录里跑才对，也不在 `tsconfig.include` 范围内、`git status` 是 `??` 未跟踪的孤儿文件 —— 换台机器就没。现在路径基于 `import.meta.url`，从任意 cwd 都能跑；输出补上完整快照文件名与总份数；`tsconfig.include` 补 `scripts/**/*.ts`。转正后 tsc 立刻抓到原本藏着的一处 `r.items` 可能为 undefined，已修。它现在是回放 15 份历史快照、核对闸门三态的取证工具，也是上一条判据变更以后调档位的对照工具。
@@ -157,6 +164,9 @@
 
 - 本轮（P1 收口）：前后端 `tsc --noEmit` 均 0 错；定向五处 **88/88**；新增 `desktop/test/opportunity_freshness.test.ts` 2 条、`orchestrator/test/refresh_propagation.test.ts` 4 条、`shortline_collector.test.ts` 真注入删除失败 1 条（断言释放标记 + 显式告警 + 下一台采集器立刻接管，不等 90 秒）；**desktop 全量 450/450**；Python 三套 **1682 passed / 2 failed**（两条 `os.symlink` WinError 1314 权限基线）；**`test-delta.mjs` 无新增失败、退出码 0**（42 条失败全在 45 条基线内，1 条负载偶发单跑通过，`known-failures.json` 保持 45 条未改）。
 - 仍未处理的 P2：逐端点 TTL 覆盖率 18/182；自动刷新多为 `load(false)`、不保证上游真重取；`BreadthBody` 可能把 0 显示成真值；`risk_level` 徽标与「抗跌度」并列仍有读反风险；`DailyReview` 无自动刷新；`release_version.test.ts` 不校验 git tag；门禁未覆盖 desktop / Python（README 已写明分工）。**缺腿压仓分档仍待样本**，不拿 15 份快照装回测。
+
+- 本轮（行为测试升级 + 基线复核）：`refresh_propagation.test.ts` 从 4 条纯源码断言扩成 **3 条行为 + 4 条结构** —— 真调 `runView` / `shortlineOverviewAct`（注入假取数、不联网），实测 `refresh:"1"` → 10 次取数全 `fresh`、无参 → 全 `prefer_cache` 且上限均为有限正数；`runView` 原样把 `{refresh:"1",foo:"bar"}` 交给注册视图。新增 `test_delta_guard.test.ts` 3 条。定向 **10/10**、前后端 `tsc --noEmit` 0 错、`test-delta` 无新增失败且退出码 0、`known-failures.json` 保持 45 条未改。
+- 仍未升级为行为测试的三处（诚实留白）：`shortline_overview` 注册闭包接线、机会链子信号 `force`、`day_opportunity` 的 gap 文案 —— 这三处依赖真实取数或 ESM 注入，目前只有源码结构断言，措辞一改就红，但**不能证明运行时真的生效**。实机探针留到下一个交易日。
 
 ## [2.1.4] - 2026-10-26
 

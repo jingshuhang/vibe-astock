@@ -242,6 +242,7 @@ const addedCandidates = [...current.keys()].filter((k) => !baseKeys.has(k));
 // 对「疑似新增」做一次单独重跑:单独也红 = 真是本次改动引入;单独通过 = 并行负载导致,
 // 记为不稳定不判回归。只重跑可疑文件,平时是 0 个,不会拖慢日常检查。
 const flakyNow = new Set();
+const uncovered = [];
 if (addedCandidates.length) {
   const suspectFiles = [...new Set(addedCandidates.map((k) => current.get(k).file))];
   process.stderr.write(`[test-delta] 疑似新增 ${addedCandidates.length} 条,单独重跑 ${suspectFiles.length} 个文件确认...\n`);
@@ -250,11 +251,19 @@ if (addedCandidates.length) {
   //    永远不可能零失败 → 该文件里任何负载偶发都会被误报成「本次改动引入的真实回归」。
   //    2026-11-06 实测：连续两次门禁分别误报 startup_* 3 条、audit_chain 1 条，逐条单跑均通过。
   //    反过来，候选用例单跑仍红时必须保留为真实新增，不许被这层判定吞掉。
-  const rerun = suspectFiles.flatMap((f) => runSweep(1, f).results);
+  // 🔴 第二道：`runSweep` 匹配不到文件 / 单跑进程异常时 results 同样是空数组，
+  //    只看 results 会把「根本没跑」当成「单独通过」→ 整批真实回归被标 flaky、退出码假 0。
+  //    必须拿 files（这次真跑过的文件）确认覆盖到了，没覆盖的一律保留为新增失败。
+  const reruns = suspectFiles.map((f) => ({ requested: f, sweep: runSweep(1, f) }));
+  const reranFiles = new Set(reruns.flatMap((r) => r.sweep.files));
+  const rerun = reruns.flatMap((r) => r.sweep.results);
   const stillFailing = new Set(
     rerun.flatMap((x) => (x.fail ?? []).map((n) => `${x.file}::${normName(n)}`)),
   );
-  for (const k of addedCandidates) if (!stillFailing.has(k)) flakyNow.add(k);
+  for (const k of addedCandidates) {
+    if (!reranFiles.has(current.get(k).file)) { uncovered.push(k); continue; }
+    if (!stillFailing.has(k)) flakyNow.add(k);
+  }
 }
 const added = addedCandidates.filter((k) => !flakyNow.has(k));
 
@@ -275,6 +284,11 @@ if (flakyNow.size) {
   process.stdout.write(`⚪ 并行跑时红、单独重跑通过 ${flakyNow.size} 条(负载导致,不判为回归):\n`);
   for (const k of flakyNow) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
   process.stdout.write(`   确认是长期不稳的,可标 flaky: node scripts/test-delta.mjs --flaky "${[...flakyNow][0].split("::")[1]}"\n\n`);
+}
+if (uncovered.length) {
+  process.stdout.write(`⚠️ 单独重跑没覆盖到 ${uncovered.length} 条(不判 flaky,保留为新增失败):\n`);
+  for (const k of uncovered) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
+  process.stdout.write(`   → 重跑没跑起来就别下「偶发」结论,先查 run-all-tests 的 --only 匹配。\n\n`);
 }
 if (flakyPassed.length) {
   process.stdout.write(`⚪ 本轮偶然通过 ${flakyPassed.length} 条(基线里标了 flaky,不算修好,仍留在基线):\n`);
