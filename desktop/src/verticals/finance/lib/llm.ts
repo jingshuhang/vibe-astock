@@ -3,12 +3,16 @@
  *
  * 🔴 口径与开源版 Vibe-Research 对齐 —— 那一份经过真实用户验证：
  *    用户在「接入 AI」页选模型、粘自己的 key → 存本地 → **随请求发给本机后端** →
- *    后端把它拼进一个临时 env 交给引擎。**配置文件 / 日志 / 账本一个字节都碰不到。**
+ *    后端把它拼进一个临时 env 交给引擎。**config.json / 日志 / 账本一个字节都碰不到。**
  *
- * ⚠️ 上一版的口径是「密钥只从环境变量读，界面只读」。那在终端里启动时没问题，
- *    但只依赖启动服务前配置 shell 环境，浏览器 UI 里就没有可操作的接入入口。
- *    「不进产品配置文件」这条纪律在新做法下照样成立。注意 localStorage 本身会由浏览器落到
- *    本机用户配置中，它不是系统钥匙串，也不承诺加密；这里只承诺不进入产品后端的持久化面。
+ * ⚠️ 2026-11-05 起多了一份**明确的例外**（`saveLlmEverywhere` / `clearLlmEverywhere`）：
+ *    页面「测试并保存」成功后，同一份配置会 POST 到 `/llm-saved`，落到
+ *    `<数据根>/llm.json`（0600，只有本机当前用户可读），专供 18:55 日复盘 /
+ *    19:02 情绪复盘 / 周五 19:10 AI 周报 这三个**没有浏览器**的定时任务用
+ *    （见 orchestrator/src/page_saved_llm.ts）。
+ *    此前只存浏览器里，那三个任务读的是 config.json 里另一家 —— 页面上写着「已接入AI」，
+ *    任务却因为模型名不对全部 404，一天的复盘白丢。
+ *    它**不是**第二份独立配置：页面上「清除」会连这份一起删，也不进日志 / 账本 / 产物。
  *
  * 🔴 浏览器产品只认用户明确保存的这一份配置，不回落到后端环境变量。
  *    否则首次使用会在没做选择时悄悄调用另一家模型，界面也无法解释实际走了哪条路。
@@ -50,6 +54,57 @@ export function saveLlm(cfg: LlmConfig): void {
 
 export function clearLlm(): void {
   clearUserLlm();
+}
+
+/**
+ * 保存，并**同步一份到后端**给定时任务用（见文件头那条例外）。
+ *
+ * 🔴 两步的结果必须分开报：浏览器这份成功了、后端那份失败，就说「页面已保存，后台那份没存下」——
+ *    合起来说「保存失败」会让用户以为页面也没存，回头再做一遍；而说「保存成功」则是**假话**：
+ *    今晚 18:55 的任务仍会用原来那个来源。
+ */
+export async function saveLlmEverywhere(cfg: LlmConfig): Promise<void> {
+  // 先落浏览器这份:它是页面上判断「配好了没有」的依据,也是后端那份的唯一来源
+  saveLlm(cfg);
+  try {
+    await backend.saveJobsLlm(cfg);
+  } catch (e) {
+    // 后端还是旧进程(没有这个路由)时,别让用户以为是自己填错了 —— 说清楚要重启
+    if (e instanceof ApiError && e.status === 404) {
+      throw new ApiError(
+        "页面已保存，但后台进程还是旧版本、没有同步接口：重启一次产品后，这份配置才会同步给定时任务。",
+        502, "jobs_llm_save_failed",
+      );
+    }
+    throw new ApiError(
+      `页面已保存，但给定时任务用的那份没存下（${e instanceof Error ? e.message : String(e)}）`
+      + "：日复盘 / 情绪复盘 / AI 周报仍会用原来的来源，请重试保存。",
+      502, "jobs_llm_save_failed",
+    );
+  }
+}
+
+/**
+ * 清除，连后端那份一起删。
+ * 🔴 后端那份留着 = 一份没人管的 key 还在盘上、而且定时任务照旧用它 —— 必须说出来。
+ */
+export async function clearLlmEverywhere(): Promise<void> {
+  clearLlm();
+  try {
+    await backend.clearJobsLlm();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) {
+      throw new ApiError(
+        "页面配置已清除，但后台进程还是旧版本、没有同步接口：那份可能还在盘上。重启一次产品后再点一次清除。",
+        502, "jobs_llm_clear_failed",
+      );
+    }
+    throw new ApiError(
+      `页面配置已清除，但后台那份还在（${e instanceof Error ? e.message : String(e)}）`
+      + "：定时任务仍会用它。请重试清除，或手动删掉数据根下的 llm.json。",
+      502, "jobs_llm_clear_failed",
+    );
+  }
 }
 
 /**

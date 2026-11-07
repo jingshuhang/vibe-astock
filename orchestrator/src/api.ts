@@ -16,7 +16,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, auditCheckHead, auditRegister, auditVerify, chatSend, compareRuns, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runToolRequest, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, assertGenericLedgerWrite, pageQuery, getEvidence, credentialStatus, setCodeBuddyLocation, setCredential, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportPreview, reportUpload, reportsList, researchStatus, safePath, serviceContext, deleteRun, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, auditCheckHead, auditRegister, auditVerify, chatSend, compareRuns, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runToolRequest, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, assertGenericLedgerWrite, pageQuery, getEvidence, credentialStatus, setCodeBuddyLocation, setCredential, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportPreview, reportUpload, reportsList, researchStatus, safePath, serviceContext, deleteRun, startResearch, thermoSeries, savedLlmOverview, saveSavedLlm, clearSavedLlmRoute, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
 import { savedCredential } from "./saved_credentials.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
@@ -315,6 +315,16 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
           return send(res, 200, await llmProbe(ctx, b as never, signal));
         });
       }
+      /**
+       * 页面保存的那份 AI 配置 → 落一份到后端，给定时任务用（日复盘 / 情绪复盘 / AI 周报）。
+       * GET 只给打码状态与「定时任务当前实际用哪一份」；POST `{source:{provider,baseURL,apiKey,model}}`；
+       * DELETE 跟页面上的「清除」一起走，不留第二份独立配置。见 page_saved_llm.ts。
+       */
+      if (url.pathname === "/llm-saved") {
+        if (req.method === "GET") return send(res, 200, savedLlmOverview(ctx));
+        if (req.method === "DELETE") return send(res, 200, clearSavedLlmRoute(ctx));
+        if (req.method === "POST") return send(res, 200, saveSavedLlm(ctx, await readBody(req)));
+      }
       // 资料导入:上传截图 / 文本 → agent 转写成台账**草稿**(不直接落库,见 ingest.ts)。
       // base64 会把体积放大约 1/3,再留些余量给 JSON 外壳
       if (req.method === "POST" && url.pathname === "/import") {
@@ -547,6 +557,9 @@ async function main(): Promise<void> {
   const srv = createApiServer(ctx, { token: tk.token, cookieLogin: loopback });
   // 定时提醒只在真正的后台进程里按点跑(测试里 createApiServer 不会启动它);VRA_SCHEDULER=off 可关
   if (process.env.VRA_SCHEDULER !== "off") startScheduler(ctx);
+  // 垂类自己的常驻任务(可选)。Core 不知道它是什么,只知道「进程起来时叫一次」;
+  // 放这里而不是 createApiServer:测试建服务时不该把这些挂起来
+  currentPlugin().onStartup?.(ctx);
   // 🔴 打印**实际绑上的端口**,不是请求的那个 —— `--port 0` 时请求的是 0,
   //    调用方（桌面外壳）就是靠这一行知道该连哪儿的
   srv.listen(port, host, () => {

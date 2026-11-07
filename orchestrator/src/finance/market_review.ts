@@ -24,6 +24,8 @@ interface Env { status?: string; evidence?: Ev[]; extra?: { date?: unknown }; mi
 
 interface Row { key: string; note: string; f: Record<string, Ev> }
 
+type SavedNote = ReturnType<typeof ledgerInsertMany>[number];
+
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const text = (v: unknown): string => (typeof v === "string" ? v : "");
 const r2 = (v: number | null) => (v === null || !Number.isFinite(v) ? null : Math.round(v * 100) / 100);
@@ -480,7 +482,11 @@ export const AUTO_TITLE = "每日复盘";
  * 🔴 幂等:同一天只要研究记录里已有一篇「每日复盘 <业务日>」就不重复写(手动运行除外)。
  * 🔴 没接 AI、这一屏整块没取到 —— 都只写一句 note 就结束,不抛错(抛错会被重试三次、进收件箱)。
  */
-export async function dailyReviewJob(j: JobContext, deps: { turn?: (message: string, session: string, signal?: AbortSignal) => Promise<string> } = {}): Promise<JobResult> {
+export async function dailyReviewJob(j: JobContext, deps: {
+  turn?: (message: string, session: string, signal?: AbortSignal) => Promise<string>;
+  /** 测试注入:模拟「正文生成了但台账没写进去」 */
+  save?: (record: Record<string, unknown>) => SavedNote | undefined;
+} = {}): Promise<JobResult> {
   const page = await pageQuery(j.ctx, { query: "review", refresh: true, signal: j.signal });
   const day = typeof page.context?.review_date === "string" ? page.context.review_date : null;
 
@@ -527,19 +533,27 @@ export async function dailyReviewJob(j: JobContext, deps: { turn?: (message: str
 
   const title = `${AUTO_TITLE} ${day}(自动)`;
   const ai = aiLabel(j.ctx);
-  const saved = ledgerInsertMany(j.ctx, {
-    kind: "note",
-    records: [{ category: NOTE_CATEGORY, title: title.slice(0, 160), body: `${text}\n\n---\n由定时任务自动生成(${ai || "后台默认模型"}),数据取数时间 ${new Date().toISOString().slice(0, 16).replace("T", " ")}。` }],
-  })[0];
+  const record = {
+    category: NOTE_CATEGORY,
+    title: title.slice(0, 160),
+    body: `${text}\n\n---\n由定时任务自动生成(${ai || "后台默认模型"}),数据取数时间 ${new Date().toISOString().slice(0, 16).replace("T", " ")}。`,
+  };
+  const saved = deps.save ? deps.save(record) : ledgerInsertMany(j.ctx, { kind: "note", records: [record] })[0];
+  // 🔴 正文生成了但台账没落进去 = 这次没写成,不能只把「没写进去」塞进消息里还报 ok
+  if (!saved?.id) throw new Error("Agent 复盘正文生成了,但研究记录没写进去:任务不能报成功");
 
   const gaps = dossier.split("\n").filter((l) => l.startsWith("【缺口")).length;
+  const blockIssues = page.blocks.filter((b) => b.status !== "ok" || b.error).length;
+  const incomplete = blockIssues > 0 || tiers === null || gaps > 0;
   return {
+    // 🔴 有缺口就让调度器记 partial,前端显示「已运行(有缺口)」,不再静默报 ok
+    status: incomplete ? "partial" : "ok",
     messages: [{
       title: `Agent 复盘 ${day} 已写完并存进研究记录`,
       lines: [
         `${text.length} 字,模型 ${ai || "后台默认"}`,
         gaps ? `资料包里有 ${gaps} 处缺口,复盘已按缺口写(不代表市场没有)` : "资料包没有缺口",
-        saved ? `研究记录 id ${saved.id}` : "研究记录没写进去,见任务状态",
+        `研究记录 id ${saved.id}`,
       ],
       link: "/daily-review",
       dedupeKey: `daily_review_ai:${day}`,

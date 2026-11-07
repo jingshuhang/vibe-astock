@@ -207,6 +207,20 @@ const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG
 export const FETCH_ENV_KEYS = [...BASE_ENV_KEYS, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
   "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];
 
+/**
+ * python 子进程**必须**带上的 UTF-8 环境。
+ *
+ * 🔴 Node 那边一律按 `utf8` 解子进程的 stdout / stderr(`service.ts` 的 `runFetchProcess`)。
+ *    python 不声明输出编码时,Windows 上会按 ANSI 代码页(cp936)写 —— 管道里是 GBK 字节,
+ *    Node 当 UTF-8 解,中文就全成 U+FFFD 替换符,**且不可逆**(信息已经丢了)。
+ *    实测症状:早间那条推送里的公告标题成了 `��Ʊ�����쳣��������`;
+ *    脚本自己 `atomic_write_json` 落的那份文件是好的,只有走 stdout 的那份坏 —— 就是这个原因。
+ *
+ * 环境是**白名单**挑的(`pickEnv`),光在 PowerShell 里设 `PYTHONUTF8` 也不一定传得下去,
+ * 所以在这里强制写死,不依赖启动环境。确定性计算那边早有同样的处理(`task_adapters.ts` 的 `calcEnv`)。
+ */
+export const PYTHON_UTF8_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } as const;
+
 export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoRoot: string }): RunConfig {
   const runId = partial.runId ?? defaultRunId(partial.symbol);
   if (!RUN_ID_RE.test(runId)) throw new Error(`run-id 非法:${runId}(只允许字母数字 . _ -,≤64 字符)`);
@@ -320,7 +334,9 @@ function pickEnv(keys: string[], extra: Record<string, string>, source: NodeJS.P
   }
   return { ...env, ...extra };
 }
-export const fetchEnv = (extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env) => pickEnv(FETCH_ENV_KEYS, extra, source);
+/** 取数子进程的环境。🔴 先放 `PYTHON_UTF8_ENV` 再铺调用方的 extra —— 万一调用方自己声明了编码,以后者为准 */
+export const fetchEnv = (extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env) =>
+  pickEnv(FETCH_ENV_KEYS, { ...PYTHON_UTF8_ENV, ...extra }, source);
 /** 需要在日志中脱敏的密钥值(模型 API 的 key;本机订阅 Agent 没有) */
 export function secretsFor(cfg: Pick<RunConfig, "api">, env: NodeJS.ProcessEnv = process.env): string[] {
   const key = cfg.api ? env[cfg.api.envKey] : undefined;

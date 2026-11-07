@@ -479,16 +479,25 @@ export function riskLevelOf(
 // ─── 仓位上限 ───────────────────────────────────────────────────────────────────
 
 /**
- * 仓位上限 = 分数梯档 ∩ 闸门梯档,取小。
+ * 仓位上限 = 分数梯档 ∩ 闸门梯档 ∩ 数据完备性,取小。
  *
  * 🔴 为什么要叠闸门:分数是「盘面现在多强」,闸门是「这个强势有没有被量能和均线确认」。
  *    广度 16% 的一天可以因为跌停家数没进风险公式而拿到 40 分的仓位上限 —— 那就是
  *    「分项算完了,但结论不能用」。闸门失败越多,上限压得越死:
  *    1 门失败 ≤ 40%,2 门 ≤ 20%,3 门全灭 = 0(三条都不配合,不给加仓)。
+ * 🔴 完备性只约束「这个结论能用到多重的仓」,不改分数、不改权重、不改阶段。
  */
+/**
+ * 数据不全时的仓位天花板，与「闸门未评估」共用同一档。
+ * 🔴 刻意不另设数值：系统早就认了「不知道 ≠ 通过、最多轻仓试探」这条纪律，
+ *    这里只是把同一条纪律覆盖到赚钱效应缺腿，不引入第二套标准。
+ */
+export const INCOMPLETE_DATA_CAP_PCT = 40;
+
 export function positionCapOf(
   composite: number,
   gate: Pick<GateResult, "blockers"> & { unknown?: string[] },
+  opts: { dataIncomplete?: boolean } = {},
 ): number {
   const ladder = composite >= 75 ? 100 : composite >= 60 ? 70 : composite >= 45 ? 40 : composite >= 30 ? 20 : 0;
   const n = gate.blockers.length;
@@ -498,8 +507,14 @@ export function positionCapOf(
    *    「不知道量能与均线过不过」和「它俩都过了」不是一回事：前者给满仓等于拿取数故障当利好。
    *    但也不按失败算 —— 数据源抖一下就把仓位打到 0，同样是不讲道理。
    */
-  const unknownCap = (gate.unknown?.length ?? 0) === 0 ? 100 : 40;
-  return Math.min(ladder, gateCap, unknownCap);
+  const unknownCap = (gate.unknown?.length ?? 0) === 0 ? 100 : INCOMPLETE_DATA_CAP_PCT;
+  /**
+   * 🔴 赚钱效应缺腿时（板块共振 / 板块资金流没取到），分数按中性补位看着正常，
+   *    但那不等于「数据齐的好日子」：实测双腿全缺 composite 78 → 旧逻辑给 100% 上限，
+   *    等于绕过了上面那条 unknownCap 防线。补同一档天花板，别拿取数故障当利好。
+   */
+  const completenessCap = opts.dataIncomplete ? INCOMPLETE_DATA_CAP_PCT : 100;
+  return Math.min(ladder, gateCap, unknownCap, completenessCap);
 }
 
 // ─── 五维打分 ───────────────────────────────────────────────────────────────────
@@ -508,8 +523,9 @@ export function positionCapOf(
  * 五维打分 + 定阶段(纯函数)。
  * 调用方负责把端点数据规整成这里要的最简输入:
  *  - 家数已是数字(缺失视作 0),且先自行判过「一家都没有 = 没取到数」
- *  - resonanceRates 已是小数数组(0..1),缺失/空的共振率已 coalesce 成 0
- *  - inflowRate 是 0..1 的净流入板块占比
+ *  - resonanceRates 已是小数数组(0..1);**空数组 = 没有展示行**,配合 resonanceShare 是否为 null 判断这条腿算不算有数据
+ *  - inflowRate 是 0..1 的净流入板块占比;**null = 资金流没取到**
+ *  - 赚钱效应的三条腿缺哪条就**按中性补位**(不比中性好、也不比已看到的部分好),不许当 0 分
  *  - promotionRate 是 0..1 的连板晋级率(来自 cn_shortline_board_ladder.ladder_tier_promotion_rate)
  *  - ladderHighest 是最近一级连板高度(板数,来自 ladder_highest)
  *  - gateData 缺省 = 只有广度门有数据(量能门 / 均线门记 unknown)
@@ -529,8 +545,8 @@ export function scoreMarket(input: {
    *    结构性地接近 1（挑的就是最高的），拿它当赚钱效应的输入会让该维度永远偏高。
    */
   resonanceShare?: number | null;
-  /** 净流入板块占比 0..1 */
-  inflowRate: number;
+  /** 净流入板块占比 0..1;null = 资金流没取到(该条腿的权重让渡,不按 0 分算) */
+  inflowRate: number | null;
   /** 最近一级连板晋级率 0..1(来自 cn_shortline_board_ladder),无则 null */
   promotionRate: number | null;
   /** 连板最高高度(板),无则 null */
@@ -547,7 +563,6 @@ export function scoreMarket(input: {
     down,
     flat,
     resonanceRates,
-    inflowRate,
     promotionRate,
     ladderHighest,
   } = input;
@@ -568,7 +583,47 @@ export function scoreMarket(input: {
   //      展示行是「共振最高的 10 个板块」,均值天然接近 1,拿它当输入等于给这一维送分
   const avgRes = resonanceRates.length ? resonanceRates.reduce((a, c) => a + c, 0) / resonanceRates.length : 0;
   const resLeg = input.resonanceShare != null ? clamp(input.resonanceShare, 0, 1) : avgRes;
-  const earningScore = clamp(upRate * 55 + resLeg * 25 + inflowRate * 20, 0, 100);
+  /**
+   * 🔴 缺一条腿时按「中性补位」,不许当 0 分,也不许当成有利。
+   *
+   * 旧的写法是「共振没取到 → resLeg = 0、资金流没取到 → inflowRate = 0」,
+   * 于是数据源抽风那天,赚钱效应凭空少 25 / 20 分(综合分最多压低约 11 分),
+   * 表现成「今天很差」—— 其实只是「今天没看见」。缺数据与真的差必须分开。
+   *
+   * 但**单纯把权重全让给剩下的腿**也不行,实测过:三条腿只剩广度时,
+   * 广度 87% 的假想日算出 87 分,比数据齐全的好日子(共振 60% / 净流入 50% → 73)还高 ——
+   * 那就成了「取数故障当利好」,和本文件闸门那条「不知道不等于过了」是同一个错误。
+   *
+   * 所以缺的那条腿按 `min(中性先验, 已看到部分的加权均值)` 补:
+   *  - 不比中性更好(不把故障日算成好日子);
+   *  - 也不比已经看到的部分更好(盘面明显很差时,缺的腿不许把分数拉回来);
+   *  - 补出来的分永远 ≥ 旧写法的「按 0 算」,所以不会比现在更苛刻。
+   *
+   * 判据(哪些算「有数据」):
+   *  - 共振:给了聚合占比,或者有展示行。`resonanceShare` 显式给 0 是**真的 0**。
+   *  - 资金流:`inflowRate === null` 才是没数据;0 是「有数据但一个板块都没净流入」。
+   *  - 广度:永远有(调用方已先判过「一家都没有 = 没取到数」,那种情况整个维度算不出来)。
+   */
+  const RES_NEUTRAL = 0.2;
+  const FLOW_NEUTRAL = 0.5;
+  const hasRes = input.resonanceShare != null || resonanceRates.length > 0;
+  const hasInflow = input.inflowRate != null;
+  const inflowLeg = input.inflowRate ?? 0;
+  const legs = [
+    { w: 55, v: upRate, neutral: upRate, known: true },
+    // 共振率口径 = 共振率 ≥60% 的板块占比,实测长期在 0.08~0.30(10/29 0.20、10/30 0.10),取 0.2
+    { w: 25, v: resLeg, neutral: RES_NEUTRAL, known: hasRes },
+    // 净流入板块占比,实测 10/30 为 26/48 = 54%,取 0.5
+    { w: 20, v: inflowLeg, neutral: FLOW_NEUTRAL, known: hasInflow },
+  ];
+  const seen = legs.filter((l) => l.known);
+  const seenW = seen.reduce((a, l) => a + l.w, 0);
+  const seenAvg = seenW > 0 ? seen.reduce((a, l) => a + l.w * l.v, 0) / seenW : 0;
+  const earningScore = clamp(
+    legs.reduce((a, l) => a + l.w * (l.known ? l.v : Math.min(l.neutral, seenAvg)), 0),
+    0,
+    100,
+  );
 
   // 龙头 / 板块强度:连板高度 + 晋级率(涨停家数只反映广度,不反映龙头质量)
   let dragonScore: number;

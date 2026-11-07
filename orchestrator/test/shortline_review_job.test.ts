@@ -136,6 +136,7 @@ test("正常跑:等它写完才报结果,落进台账的标「定时任务」,�
     const turn = fakeTurn();
     const r = await shortlineReviewJob(jobOf(ctx), { turn });
 
+    assert.equal(r.status, "partial", "有段跳过 + 资料包有缺口,任务状态必须显式报 partial");
     assert.equal(r.messages.length, 1);
     const m = r.messages[0]!;
     assert.equal(m.title, `AI 情绪复盘 ${DAY} 已写完并存档`);

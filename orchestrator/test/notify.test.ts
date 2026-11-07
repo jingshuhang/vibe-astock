@@ -218,6 +218,38 @@ test("任务返回的消息格式不对按失败处理,不往收件箱写半截�
   } finally { clean(ctx); }
 });
 
+test("任务自己报「有缺口」时记成 partial,不显示成已运行;报别的状态一律按失败处理", async () => {
+  const ctx = tmpCtx();
+  try {
+    // 跑完了,但有一部分数据没落成(比如台账缺了几条):状态要能被界面区分出来
+    const h = harness();
+    h.setRun(async () => ({ messages: [], note: "缺口 2 条", status: "partial" }));
+    const r = await tick(ctx, { now: sh("2026-10-08T15:40"), def: h.def });
+    assert.equal(jobState(ctx, h).status, "partial");
+    assert.deepEqual(r.ran.map((x) => x.status), ["partial"], "本拍回报也要带出去");
+    assert.equal(jobState(ctx, h).last_day, "2026-10-08", "partial 也算跑过了,当天不再跑");
+
+    // 不写 status = 照旧记 ok
+    const ctx2 = tmpCtx();
+    try {
+      const h2 = harness();
+      h2.setRun(async () => ({ messages: [], note: "都落成了" }));
+      await tick(ctx2, { now: sh("2026-10-08T15:40"), def: h2.def });
+      assert.equal(jobState(ctx2, h2).status, "ok");
+    } finally { clean(ctx2); }
+
+    // 任务不能自称失败来绕过重试:只认 ok / partial
+    const ctx3 = tmpCtx();
+    try {
+      const h3 = harness();
+      h3.setRun(async () => ({ messages: [], note: "想自己报失败", status: "failed" as unknown as "ok" }));
+      await tick(ctx3, { now: sh("2026-10-08T15:40"), def: h3.def });
+      assert.equal(jobState(ctx3, h3).status, "failed");
+      assert.equal(jobState(ctx3, h3).note.includes("ok 或 partial"), true);
+    } finally { clean(ctx3); }
+  } finally { clean(ctx); }
+});
+
 function fakeFetch(calls: { url: string; body: Record<string, unknown> }[], reply: (url: string) => { status: number; body: unknown } = () => ({ status: 200, body: { code: 0, errcode: 0 } })) {
   return (async (url: string | URL, init?: RequestInit) => {
     calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });

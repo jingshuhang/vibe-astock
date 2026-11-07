@@ -245,10 +245,16 @@ const flakyNow = new Set();
 if (addedCandidates.length) {
   const suspectFiles = [...new Set(addedCandidates.map((k) => current.get(k).file))];
   process.stderr.write(`[test-delta] 疑似新增 ${addedCandidates.length} 条,单独重跑 ${suspectFiles.length} 个文件确认...\n`);
-  for (const f of suspectFiles) {
-    const r = runSweep(1, f);
-    if (r.results.length === 0) for (const k of addedCandidates) if (current.get(k).file === f) flakyNow.add(k);
-  }
+  // 🔴 必须按「用例名」判定，不能用「文件是否零失败」：
+  //    基线里本来就有必挂用例（如 audit_chain 的 EPERM symlink）的文件，单独重跑
+  //    永远不可能零失败 → 该文件里任何负载偶发都会被误报成「本次改动引入的真实回归」。
+  //    2026-11-06 实测：连续两次门禁分别误报 startup_* 3 条、audit_chain 1 条，逐条单跑均通过。
+  //    反过来，候选用例单跑仍红时必须保留为真实新增，不许被这层判定吞掉。
+  const rerun = suspectFiles.flatMap((f) => runSweep(1, f).results);
+  const stillFailing = new Set(
+    rerun.flatMap((x) => (x.fail ?? []).map((n) => `${x.file}::${normName(n)}`)),
+  );
+  for (const k of addedCandidates) if (!stillFailing.has(k)) flakyNow.add(k);
 }
 const added = addedCandidates.filter((k) => !flakyNow.has(k));
 

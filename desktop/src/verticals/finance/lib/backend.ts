@@ -585,6 +585,23 @@ export const backend = {
     });
   },
 
+  /**
+   * 把页面这份配置存一份到**后端**，给定时任务用（日复盘 / 情绪复盘 / AI 周报）。
+   *
+   * 那两个任务跑的时候没有浏览器，拿不到 localStorage 里这份 —— 只存浏览器里，
+   * 定时任务用的是 `<数据根>/config.json` 里另一家，界面上还看不出差别
+   * （2026-11-05 实测：三个任务全部 404，当天复盘一篇没写）。
+   * 🔴 只在连接测试通过之后调用：后端会按同一条解析链再校验一次，不通就拒。
+   */
+  saveJobsLlm: (llm: unknown, signal?: AbortSignal) => call<JobsLlmStatus>("/llm-saved", {
+    method: "POST", body: JSON.stringify({ source: llm }), signal,
+  }),
+
+  /** 「清除」要连后端那份一起删 —— 否则它就成了第二份没人管的配置（还带着 key） */
+  clearJobsLlm: (signal?: AbortSignal) => call<JobsLlmStatus>("/llm-saved", { method: "DELETE", signal }),
+
+  jobsLlm: (signal?: AbortSignal) => call<JobsLlmStatus>("/llm-saved", { signal }),
+
   /** RSS 标题走专用受限转换入口，不借用会记上下文的自由对话。 */
   translateHeadlines: async (items: { id: string; title: string }[], signal?: AbortSignal, llm?: unknown) => {
     const runtime = requestRuntime(llm);
@@ -732,8 +749,13 @@ export type ApiVerification = "verified" | "unsupported" | "untested";
 export interface ProductInfo {
   version: string;
   /**
-   * **后台默认** AI 来源(页面没选来源时用它;命令行跑研究也用它)。
-   * profile 为 null = 没配后台默认 ⇒ 页面必须自己选,不会替用户挑一个。
+   * **后台默认** AI 来源 —— 也就是**定时任务实际会用的那一份**。
+   *
+   * 🔴 判定与后端 `defaultLlm` 同一套：页面「接入 AI」保存过就用那一份
+   *    （`provider_source: "page"`，key 在 `<数据根>/llm.json` 里，故 `env_key` 为 null），
+   *    否则用 `config.json` 里的（`provider_source: "config"`）。
+   *    只报 config.json 的话，页面选的是 A、三个定时任务跑的是 B，界面上还写着一切正常。
+   * profile 为 null = 一份都没有 ⇒ 页面必须自己选，不会替用户挑一个。
    */
   provider: {
     profile: string | null;
@@ -743,7 +765,15 @@ export interface ProductInfo {
     env_key: string | null;
     key_present: boolean | null;
     verification: ApiVerification | null;
+    /** 生效的模型名(页面那份=它保存的；config 那份=defaults.model) */
+    model?: string | null;
   };
+  /** 定时任务实际用哪一份 */
+  provider_source?: "page" | "config" | null;
+  /** `config.json` 里写的是谁 —— 仅供诊断，不一定在生效 */
+  config_provider?: ProductInfo["provider"];
+  /** 页面保存的那一份(打码，不含 key) */
+  saved_llm?: JobsLlmStatus;
   defaults: Record<string, unknown>;
   paths: { data_root: string; python: string };
   sources: string[];
@@ -757,6 +787,20 @@ export interface ProductInfo {
    * 「明明实测过却没标」或更糟的「没测过却标了已实测」。
    */
   provider_templates?: Record<string, string>;
+}
+
+/** 页面上保存的那份 AI 配置在后端的状态（`/llm-saved`）。**永远不含 key。** */
+export interface JobsLlmStatus {
+  saved: boolean;
+  provider: string | null;
+  model: string | null;
+  base_url: string | null;
+  saved_at: string | null;
+  /** 文件在但读不懂 / 形状不对时的原因 —— 这时定时任务会停下来报错，不会偷换成另一个大脑 */
+  problem: string | null;
+  file: string;
+  /** 定时任务当前实际会用哪一份 */
+  jobs_ai?: { layer: "page" | "config" | null; provider: string | null; model: string | null };
 }
 
 export interface SecContactStatus {

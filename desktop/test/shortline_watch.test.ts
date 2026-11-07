@@ -95,7 +95,7 @@ test("实时动态:收盘后 / 休市不判断异动,写清原因和刷新间隔
     const props = { threshold: 1.5, scope: "all", ladderMin: 1, onThreshold: noop, onScope: noop, onLadderMin: noop, error: null };
     const closed = textOf(r.html(LiveView, { ...props, v: { ...LIVE, phase: "closed", phase_label: "已收盘", detecting: false, poll_ms: 60000, alerts: [] } }));
     assert.match(closed, /已收盘 北京时间 10:01:32 · 每 60 秒刷新/);
-    assert.match(closed, /已收盘,不判断异动;连续竞价时段\(9:30–11:30、13:00–14:57\)页面开着就会盯/);
+    assert.match(closed, /已收盘,不判断异动;连续竞价时段\(9:30–11:30、13:00–14:57\)后台会自动盯着采/);
     const holiday = textOf(r.html(LiveView, { ...props, v: { ...LIVE, phase_label: "今天休市", trading_day: false, detecting: false, poll_ms: 60000, alerts: [], ladder: null, bigcap: null, turnover: null } }));
     assert.match(holiday, /今天休市,不判断异动。/);
     assert.match(holiday, /昨日梯队这次没取到/);

@@ -52,7 +52,7 @@ test("台账种类:只许任务写;必填=日期/四档/方向/已对账;触发�
   assert.equal(k.managedWrites, true, "通用台账接口不许改,只许 inbox 扫描任务写");
   assert.deepEqual(k.required, ["date", "call", "direction", "settled"]);
   assert.deepEqual((k.properties.call as { enum: string[] }).enum, ["加仓", "持有", "减仓", "观望"]);
-  assert.deepEqual((k.properties.direction as { enum: string[] }).enum, ["偏多", "中性", "偏空"]);
+  assert.deepEqual((k.properties.direction as { enum: string[] }).enum, ["偏多", "中性偏多", "中性", "中性偏空", "偏空"]);
   assert.deepEqual((k.properties.trigger_metric as { enum: string[] }).enum, ["breadth_pct", "limit_up", "limit_down", "amount_yi"]);
   assert.deepEqual((k.properties.trigger_op as { enum: string[] }).enum, ["above", "below"]);
   assert.equal(k.properties.additionalProperties, undefined, "schema 由 ledger 统一加 additionalProperties:false");
@@ -85,14 +85,24 @@ test("视图已登记;18:30 定时任务排在全景收盘档落件之后", () =
 });
 
 // ── 交接件校验 ─────────────────────────────────────────────────────────────────
+test("parseCallJson:「中性偏多」这类四档词必须收下 —— 三档枚举曾让 2026-11-05 整天没入账", () => {
+  // 真实事故:全景侧写了 direction="中性偏多",三档枚举判它不合法,原件留在 inbox,
+  // 台账缺了一天,而 job 只报 ok。这里把五种档位逐个走一遍。
+  for (const direction of ["偏多", "中性偏多", "中性", "中性偏空", "偏空"]) {
+    const r = parseCallJson(callJson({ direction }));
+    assert.equal(r.ok, true, `${direction} 应被接受`);
+    // 🔴 原样存档,不许归一化 —— 把「中性偏多」改写成「偏多」就是篡改上游判断
+    if (r.ok) assert.equal(r.call.direction, direction);
+  }
+});
+
 test("parseCallJson:全字段合法归一化;结构化触发三项要么齐要么全缺", () => {
   const ok = parseCallJson(callJson());
   assert.equal(ok.ok, true);
   if (!ok.ok) return;
   assert.deepEqual(
     [ok.call.date, ok.call.call, ok.call.direction, ok.call.trigger_metric, ok.call.trigger_op, ok.call.trigger_value, ok.call.breadth_pct, ok.call.limit_up],
-    ["2026-11-05", "减仓", "偏空", "breadth_pct", "below", 45, 48.6, 55]);
-  // 只给原文不给结构化:合法,trigger_metric=null(判不了,不进分母)
+    ["2026-11-05", "减仓", "偏空", "breadth_pct", "below", 45, 48.6, 55]);  // 只给原文不给结构化:合法,trigger_metric=null(判不了,不进分母)
   const loose = parseCallJson(callJson({ trigger_metric: undefined, trigger_op: undefined, trigger_value: undefined }));
   assert.equal(loose.ok, true);
   if (loose.ok) assert.deepEqual([loose.call.trigger_metric, loose.call.trigger_op, loose.call.trigger_value], [null, null, null]);
@@ -102,7 +112,7 @@ test("parseCallJson:全字段合法归一化;结构化触发三项要么齐要�
   if (!half.ok) assert.match(half.why, /要么都给/);
 });
 
-test("parseCallJson:缺日期/坏四档/坏三档/坏读数/坏比较各自拒并说原因", () => {
+test("parseCallJson:缺日期/坏四档/坏档位/坏读数/坏比较各自拒并说原因", () => {
   const why = (o: Record<string, unknown>) => {
     const r = parseCallJson(callJson(o));
     return r.ok ? "" : r.why;
@@ -110,7 +120,7 @@ test("parseCallJson:缺日期/坏四档/坏三档/坏读数/坏比较各自拒�
   assert.match(why({ date: undefined }), /date/);
   assert.match(why({ date: "2026-11-99" }), /date/);
   assert.match(why({ call: "满仓" }), /四档/);
-  assert.match(why({ direction: "看戏" }), /三档/);
+  assert.match(why({ direction: "看戏" }), /档位/);
   assert.match(why({ trigger_metric: "turnover" }), /可对账清单/);
   assert.match(why({ trigger_op: "gte" }), /above\/below/);
   const notObj = parseCallJson("不是对象");

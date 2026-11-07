@@ -3,6 +3,161 @@
 格式遵循 Keep a Changelog，并采用语义化版本。v1.1.3 及更早的条目保留旧版原文。
 底座（Vibe Research）此前的变化见 [Vibe Research 的 CHANGELOG](https://github.com/simonlin1212/Vibe-Research/blob/main/CHANGELOG.md)。
 
+## [未发布]
+
+三件事：收盘后的三个 AI 任务改成用**你在「接入 AI」里保存的那份配置**（此前它们读的是另一个地方，界面上看不出来）、盘中异动改成**后台常驻采集**（页面关着也照采），以及修 Windows 上取数字段的中文**整段变替换符**。
+
+### 修复
+
+- **「机会发现」页的题材、龙头封单、首封/末封时间是 `10-30` 的，摆了 7 天，而同屏的涨停家数是当天的。** 用户先觉得「左面退潮期、右面逆势启动」矛盾，查下去发现两侧根本不是同一天的数据。
+  - 证据链：① `三季报增长 15 只 / 最高 5 板`、`"羊"字辈 6 / 3 板`、`大消费 6 / 2 板`、`三季报大增 5 / 1 板` 与 **10-30** 那份题材树逐项一致；② 龙头「青岛食品」写着 `5 板 / 首封 09:30 / 末封 13:00 / 封单 0.57 亿`，而 10-30 的树里正好有 `青啤拟入主=1只/最高5板`、`饼干食品=1只/最高5板`，它**不在今日 26 只涨停池里**（push2ex 实时池，这一条本身可信；它旁边那个「今日 -1.81%」反而是冻结的行情键，见下文 `fetchQuotes`）；③ 现场探针 `POST /fetch {cn_shortline_themes, top:12}` 返回 `cached:true, fetched_at:2026-10-30T19:36:55, date:2026-10-30`。
+  - 根因是两道门同时没关：`DEFAULT_CONSISTENCY` 是 `{mode:"prefer_cache"}` **不带 `max_age_ms`**，而 `snapshotUsable` 在「一个上限都没有」时直接 `return true`；快照键又只由「端点+参数」决定、**不含日期** —— 于是同一把键一次写入、永久命中。第二道门：`opportunityScanAct` 的 `body` 参数写作 `_body`、全程没读过，页面 `?refresh=1` 被直接丢掉，**点「刷新」也救不回来**。看着「新」的端点都是别人在替它刷（`live` 靠后台常驻采集、`em_*` 靠市场状态、`sina_board_flow` 靠盯盘概况轮询），没有第二个调用方的键就永久冻结。全库 182 个端点**没有一个**声明 `cache_max_age_sec`，这道保险其实从未生效。
+  - 修法：`opportunity.ts` 新增 `SNAPSHOT_MAX_AGE_MS`，按「数据本身多久变一次」逐端点给上限（跟盘走的 `cn_shortline_live` 30 秒、收盘档/日更的六项 12 小时、`sina_board_flow` 2 分钟），表外端点兜底 2 分钟 —— **任何键都不许永不过期**；`one()` 与 `fetchQuotes` 都带上 `consistency`；`?refresh=1` 改为真取（`{mode:"fresh"}`）。`sealHistory` 刻意不加：它的键里带日期、内容不可变，加时效只会让一次刷新把 20 天全部重取一遍。
+  - 实测修复效果：带 12 小时上限重取 → `cached:false, 8.1 秒, date:2026-11-05`，题材从 `三季报增长 15 / 光伏 0 / 机器人 0` 变成 `三季报增长 5 / 光伏 3 / 机器人 3 / 端侧AI 3 / AI漫剧 2`。
+  - 顺带加了一条 `notes`：题材结构与龙头封单取自 `YYYY-MM-DD` 收盘档（涨停原因只有收盘后才有，**盘中不存在「当日题材」**）—— 否则只是把「差 7 天」换成「差 1 天」继续骗人。
+  - 回归测试钉住四件事：机会链用到的 8 个端点必须都有显式上限；上限不许超过 12 小时；7 天前的快照在每个上限下都必须判过期；刚取回的快照仍要命中缓存（修的是「永不重取」，不是关掉缓存）。
+  - 已重启并实测：`POST /fetch {em_market_trend, max_age_ms:300000}` 刚取过时 `cached:true / 0.16 秒`，改成 `max_age_ms:1` 立刻重取（`fetched_at` 换成新的一刻）；`GET /view/market_state_view` 无参数 19 秒（用到期的就重取）、带 `?refresh=1` 69 秒（六个端点全部真取）。
+  - **同一类隐患一并修掉（`day_opportunity`，板块宽度）**：这张表的「涨跌家数 / 中位涨幅 / 净流入」同样没有任何时效，全靠盯盘概况顺手替它刷。现在 `tx_quotes_batch`（20 秒）、`sina_board_flow`（2 分钟）、`index_constituents`（12 小时，注释一直写着「缓存 24h」但从来没有代码兑现它）都上了时效，`?refresh=1` 也认了。为此把表与 `wantsFresh` / `consistencyFor` 抽到 `finance/snapshot_ttl.ts`，两个视图共用一份，避免再出现「改了一处、漏了另一处」。
+  - **同一类缺口一并补上（本轮已改）**：`market_state`（`market_state` 与 `market_state_view` 两个动作）、`shortline/opportunities`、`shortline/overview` 三个视图的 `body` 现在都读 `refresh`，页面上的「重新取数 / 刷新」按钮从「点了没反应」变成真取。`shortline/overview` 是在入口处包一层 `fetch`、把 `consistencyFor(端点, force)` 统一挂在所有取数上 —— 它内部有十几个 `fetchEndpoint` 调用，逐个改必漏。
+- **「机会发现」页切回前台不补刷：后台放半小时，回来还是 `数据 1900s 前取的`**。定时器本身没问题，是两件事叠在一起 —— 隐藏标签页里浏览器把 `setInterval` 降频到 1 分钟一拍，而这条定时器**自己**又在 `document.hidden` 时主动跳过。于是「切走 → 切回」看到的永远是切走前那一份，而按钮上明晃晃写着「自动刷新 开」。
+  - 2026-11-06 11:26 实测：页面在后台约 31 分钟，回来时 `数据 1900s 前取的`；同一屏的「盯盘 · 实时概况」反倒立刻刷新了。快照写入时间对得上这件事 —— 页面驱动的四个快照挤在 `11:25:06 / 11:25:34 / 11:26:29 / 11:26:32`（正好一轮 `useOverviewPoll` 的 86 秒），之后一片安静；而后台常驻采集的 `cn_shortline_live`（3 秒）一直到 `11:30:32` 都没停。差别在于 `useOverviewPoll` 早就有 `visibilitychange` 补刷，这几个「判断页」一直没有。
+  - 修法：补一个 `visibilitychange` 监听，切回前台且数据已过期（≥ `REFRESH_MS`）时立刻取一轮。**只在过期时补** —— 一轮要跑十几秒、起好几个取数进程，不值得为差 30 秒重跑。
+  - 定时器与刷新频率都没动：仍是交易时段每 2 分钟一次、隐藏时跳过（隐藏时不取数是有意的，省 CPU 和取数进程）。
+  - **这三页一并补上（本轮已改）**：抽了一个 `useMarketAutoRefresh` 钩子（盘中每 2 分钟一轮 + 切回前台时若已过期立刻补一轮），`MarketState` / `ShortlineOpportunities` / `TradePlans` 三页接上，「机会发现」也换成同一个钩子，四页行为一致。`loadedAt` 只在**成功**拿到数据时记 —— 记在 `finally` 里的话，取数失败也会把「刚更新过」写进去，反而压住下一次补刷。
+- **「自动刷新 开」开着却一直不刷，数据停在「387s 前取的」**。定时器确实每 2 分钟触发，但每次都过 `isMarketTrading("CN")` —— A 股从 **09:15** 起才算交易时段，09:02 当然刷不动；按钮只表示「开关状态」，不表示「此刻正在刷」。
+  - 修法：按钮在非交易时段显示「自动刷新 开（开盘后生效）」，`title` 说明「现在是盘前，没有当日数据可刷」。
+  - 顺带修「数据 387s 前取的」这个读数：它只在盘中有判断价值（够不够新鲜），盘前只会一路涨到几千秒、看着像故障 —— 非交易时段改成绝对时刻「数据 08:56 取的」。
+  - 自动刷新的**行为没改**：仍然是交易时段每 2 分钟一次。盘前不刷是对的（没有当日数据），要改的是它不该显示成「正在刷」。
+- **「机会发现」页同屏自相矛盾：闸门写着「上证 > MA20 未过」，右边却写「闸门开着、顺势做」**。数据和判据都没错，是**一个词被用在了两个量上**：左边那排灯读 `gate.all_pass`（三道门全过），右边四格卡读 `can_open_position`（仓位上限 ≥ 40% 且非极高风险）。
+  - 为什么会撞上：MA20 一票未过 → `gateCap = 40`，而「能开仓」的门槛也正好是 40% → `40 >= 40` 判成「能开」。**40% 这一个数被用了两次**，于是「正好一票未过」时反而显示成闸门畅通（2 票未过压到 20% 反倒显示「未开」）。
+  - 修法：只改措辞与摆法，**判据一个字没动**。四格卡的纵轴改成「可开新仓（上限 40%）/ 暂不开新仓」，与「市场状态」页早就在用的说法统一；把仓位上限数字直接写进坐标行，「能开、但只能轻仓」一眼看得出来；四格说明与 `title` 同步。
+  - 不动判据的理由：`can_open_position` 在全仓都表示「能给到轻仓就算能开」，语义本身没错；把「中性偏多」式的一票否决直接等同「不许开仓」是另一档纪律，要改应由用户拍板。
+- **「机会发现」页盘前自称「盘中 · 实时」，内容却是上一交易日收盘**。`settled` 只有「已收盘 / 没收盘」两态，而「没收盘」既包含真在盘中，也包含**今天还没开盘**。
+  - 2026-11-06 08:40 实测：`date=2026-11-06, clock=08:40, settled=false, live=null`，那一刻涨停 / 炸板 / 封板率全是「—」，闸门三项是 11-05 的数 —— 页面却顶着「盘中 · 实时」的红标。
+  - 修法：状态标改成三态 —— 「盘中 · 实时」/「已收盘（定格）」/「盘前 · 读数为上一交易日收盘」（非交易时段同理）。盘前物理上没有当日数据，所以这里不是「去取实时」，是**不许自称实时**。
+  - 盘中刷新行为未变：`auto` 默认开，交易时段每 2 分钟一次。
+- **大盘判断台账整整缺了 `2026-11-05` 一整天**，而落账任务报的是 `ok`。全景侧那份交接件写的是 `"direction": "中性偏多"`，而 `DIR_ENUM` 只有三档（偏多 / 中性 / 偏空），校验判它不合法 → 原件留在 `inbox/` 不动、台账少一行、job 把缺口塞进 note 而日志只记了 `ok`。
+  - 修法：`DIR_ENUM` 扩成五档（`偏多 / 中性偏多 / 中性 / 中性偏空 / 偏空`），`ledger_kinds` 的 schema enum 与 label 表、前端 `CallDirection` 同步；**原样存档，不做归一化** —— 把「中性偏多」改写成「偏多」就是篡改上游判断，这张台账只存档不生成建议。
+  - 这是放宽下游而不是约束上游：档位是全景档的自然表述，靠提示词把它压成三个值迟早再犯。
+  - 补回归测试「五种档位逐个走一遍且原值不变」；`2026-11-05` 已用新逻辑补入（`ingested: 1, gaps: []`），原件归档到 `processed/`。
+  - 已重启，五档对新件生效（`2026-11-05` 那份已补入）。
+- **「市场状态」页的量能门与均线门长期显示「未评估」**（不是没数据，是被超时掐了）。这两道门的输入全部来自 `em_market_trend`，而 `loadBundle` 只给它 30 秒。
+  - 实测该端点 13 次耗时：6.6 / 18.1 / 24.1 / 25.2 / 30.8 / 33.0 / 38.6 / 42.4 / 42.4 / 52.4 / 80.1 / 80.5 / 88.2 秒，**中位数 38.6 秒、9/13 超 30 秒**。拆开计时后看清了慢在哪：腾讯那 7 根指数日线各只要 0.5 秒，慢的是两市成交额 —— 东财 `push2his` 三个域名当周全断（`RemoteDisconnected`），只能落 baostock，**而 baostock 登录单次就要 87 秒**。
+  - 后果是结构性失败而非「慢一点」：超时 → `trend` 信封为 null → `gateDataFrom` 拿不到输入 → 两道门同时 unknown（广度门走另一个端点，所以只有它还亮）；叠加失败记忆的 60 秒负缓存，15 秒轮询几乎一直吃到它，命中率≈0。同一分钟两页互相打脸：盯盘页（不传超时 → 默认 180 秒）`量能 pass +28.0% / MA20 fail(3689.91 ≤ 3701.53)`，市场状态页两条都 unknown。
+  - 修法：`loadBundle` 里 `em_market_trend` 的 `timeoutMs` 30 秒 → **100 秒**（覆盖实测尾部 88.2 秒）。判据一个字没动。
+  - 代价：冷启动那一屏最坏等 100 秒；**仍是单点**，baostock 抖一下照样空。治本要把「20 日均额」这种一天只算一次的指标落盘 + 每日补算，闸门只读盘 —— 否则慢路径永远在闸门的关键路径上。
+- **公告标题等中文字段变成 `��Ʊ�����쳣��������`**：取数子进程的环境是白名单挑的（`FETCH_ENV_KEYS`），里面没有 `PYTHONUTF8` / `PYTHONIOENCODING`；Node 侧又一律按 `utf8` 解子进程 stdout（`service.runFetchProcess`）。Windows 上 python 没被声明编码就按 ANSI 代码页（cp936）写 —— 管道里是 GBK 字节、Node 当 UTF-8 解，中文全成 U+FFFD，**且不可逆**。用 `scripts/start.ps1` 起的后台正好没有这两个变量，所以必现；从 Git Bash（自带 `PYTHONUTF8=1`）跑同样的脚本却是好的，这也是它一直没被怀疑的原因。
+  - 修法：`config.ts` 新增 `PYTHON_UTF8_ENV`，`fetchEnv` 强制带上；`run_tools.ts` 两处 `spawnSync`、`doctor.ts` 的 `minimalEnv` 一并补上。确定性计算那边早有同样处理（`task_adapters.ts` 的 `calcEnv`），这次是把它推到取数 / 体检 / 计算三条 spawn 路径。
+  - 实测（同一台机器、同一个脚本、同一时间段）：不带这两项 → 标题 `�������꣺��Ʊ�����쳣��������`、整份输出 125 个替换符；带上 → `大连友谊：股票交易异常波动公告`、0 个。
+  - 已被写坏的缓存是**不可逆**的：`.local/snapshots/` 下 85 个快照（`fetch_announcements` 69、`fetch_estimates` 8、`fetch_financials` 6、`fetch_profile` 1、`fetch_trade_calendar` 1，2026-10-27 09:05 起）已挪到 `.local/_broken-snapshots-20261105/`（带 MANIFEST），等重取覆盖。**这条修复上线前产生的通知/快照不会自动变好。**
+  - `release_version.test.ts` 允许 CHANGELOG 顶部有 `[未发布]` 小节（它不主张版本号），版本一致性照旧只认最上面的**版本**条目。
+- **跑完了但有缺口，任务照样记 `ok`，界面上是绿的「已运行」**。`runJob` 里 `status: "ok"` 是**硬写死**的，任务函数没有任何途径说「我跑完了，但有一部分没落成」—— 于是「台账整整缺一天」这种事只藏在 `note` 里，不点开就看不见。这正是上一条 `2026-11-05` 缺了一整天却没被发现的机制。
+  - 修法：`JobResult` 新增可选 `status: "ok" | "partial"`，`runJob` 照它写；`marketCallJob` 在有缺口时返回 `partial`。**只许往低报、不许自称失败** —— 报 `failed` 之类的值会被 `checkResult` 直接判成失败，免得绕过「10 分钟后重试 / 三次才放弃」那套逻辑。
+  - 界面：`partial` 显示成「已运行（有缺口）」，黄色 `warn`，与「已运行」分开；`TickReport.ran` 里也带着 `partial`，日志不再只有 `ok`。
+  - 实测（2026-11-06 17:00 手动跑 `market_call_sync`）：`status=partial`，`note=落账 0 条;对账 1 条(2026-11-05);缺口 1 条:2026-11-05:趋势序列里没有 2026-11-06 的两市成交额`。改之前这一趟记的是 `ok`。
+  - `partial` 也算「今天跑过了」（`last_day` 照写），不会因为一条缺口整天反复重跑；缺口本来就要靠第二天的到点运行或人工回看。
+- **赚钱效应缺一条腿时被当成 0 分**：`resLeg = resonanceShare ?? avgRes ?? 0`、资金流 `boardRows.length ? … : 0`，数据源抽风那天这一维凭空少 25 / 20 分（权重 0.25，综合分最多被压低约 11 分），表现成「今天很差」—— 其实只是「今天没看见」。
+  - 但**单纯把权重全让给广度也不行**，实测过：三条腿只剩广度时，广度 87% 的假想日算出 **87** 分，比数据齐全的好日子（共振 60% / 净流入 50% → 73）还高 —— 那就成了「取数故障当利好」，与 `positionCapOf` 里「有门没评估不许给满仓」是同一个错误。
+  - 最终口径：缺的腿按 `min(中性先验, 已看到部分的加权均值)` 补位。中性先验取实测中位数（共振率 ≥60% 的板块占比长期在 0.08~0.30 → 0.2；净流入板块占比实测 26/48 = 54% → 0.5）。性质：**不比中性更好、也不比已经看到的部分更好**，且永远 ≥ 旧的「按 0 算」，不会比现在更苛刻。
+  - 实测四种情形：双腿全缺 **63**、只缺共振 63、只缺资金流 73、齐全（0.6/0.5）**73**、齐全但都差（0.1/0.1）**52** —— 缺数据落在中间，不再是极值。坏日子（广度 17%）缺腿仍是 17，不会被补位拉回来。
+  - 显式给 0 仍按 0 算（那是「真的差」，不是「没数据」）；页面上多一条 note：「赚钱效应的板块共振没取到，这部分按中性补位（既不当 0 分，也不会因为缺数据反而变好）」。2026-11-06 17:00 实测东财 `push2/clist` 全断，这条 note 正好出现在市场状态页。
+  - 遗留（要用户拍板）：缺腿日现在仍可能靠广度拿到 75+ 分、进而给到 100% 仓位档。要不要「缺腿就把仓位上限压一档」，属于纪律问题，没自作主张。→ **这条留白已闭合**：同日用户明确授权后落地，见下文 🔴「判据变更」那条；此处保留当时的判断原文，不再作为待办。
+- **复盘页「沪深京三所家数」整块没取到时，只剩三行「—」**，与「三所都是 0 家」在视觉上分不开。原计划是用 23 档涨跌分布合起来顶替，核对后**决定不这么做**：实测 2026-11-06 分布合计 5379 只、三所合计 5650 只（差约 5%），端点说明里也写着「分布合计与三所家数合计口径不同，不互相凑」，且既有测试早就钉了「不拿来顶」。
+  - 改为把缺口说出来：`parseBreadth` 新增 `exchangesMissing`（三家全空才算，只缺一家仍显示「—」），复盘页在三所家数表上方给一条黄色提示「这次没取到，上面的涨/跌/平与分档图来自 23 档涨跌分布，不受影响；三所口径与分布口径本来就不一样，不拿分布合起来顶替」。
+- **五维评分里的「风险 15 分」被读反**。用户看到退潮期还写着「风险 15 分」，按字面理解成「风险很低」；其实 `risk_score = 100 − (跌停家数×2 + 跌家占比×100)`、下限 15，量的是**安全度 / 抗跌度**，15 分是**最危险**那一档。五维本来就是同一方向（0–100、分越高越正面），只有「风险」这个名字拧着，没有第二套反向分。
+  - 证据：`.local/snapshots/em_market_breadth-709950a55d31.json` 在 2026-11-06 19:14 的读数 `涨停 32 / 跌停 15 / 涨 646 / 跌 4618 / 平 68`，跌家占比 86.6% → `100 − (15×2 + 86.6) = −16.6`，被 `clamp(…, 15, 100)` 截到 15。数字没错，是标签让人往反方向读。
+  - 修法：**只改叫法与方向说明，判据一个字没动**。`desktop/src/verticals/finance/lib/marketState.ts` 新增共享的 `DIMENSION_LABELS`（情绪 / 龙头 / **抗跌度** / 赚钱效应 / 事件，各带一行 hint：越高越热 / 越强 / 越安全 / 越好赚 / 越偏多），「市场状态」独立页与「盯盘 · 实时概况」内嵌版两处的五个环都走这一份，不再各写一份。两页都写明「五维都是 0–100 分，**分越高越正面**；『抗跌度』原名『风险』，量的是安全度，分低才是危险」；公式文本、给 AI 的页面上下文、后端 `recommendation.reason` 同步写上新名字与方向。
+  - **没有动**：字段名 `risk` / `risk_score`、风险分公式、`risk: 0.15` 名义权重、五维加权、情绪阶段判定、三道闸门判据与 `riskLevel` 分档 —— 分数、仓位上限、任何阈值全都没变。新增的 `market_state_labels.test.ts` 专门把这四行源码钉住，防止以后有人「顺手」把公式也改了。
+  - **已重启并实测**：后端 `reason` 这处必须重启服务才生效（前端 Vite 已热更：实测 `/src/verticals/finance/pages/MarketState.tsx`、`lib/marketState.ts`、`shortline/OverviewTab.tsx` 三个模块都已带「抗跌度」与方向说明）。重启前后各调一次 `GET /view/market_state_view` 作对照：
+    - 重启前 `…综合 41 分（情绪 46·龙头 80·风险 15·赚钱效应 20·事件 60）…`
+    - 重启后 `…综合 41 分（五维 0–100、分越高越正面：情绪 46·龙头 80·抗跌度 15·赚钱效应 20·事件 60）…`
+    - 综合分仍是 41、五维仍是 46/80/15/20/60 —— **文案换了，分数一个没变**，实机也验证了「只改叫法、不碰判据」。
+  - 注意：页面上的「风险等级」徽标（低 / 中 / 高 / 极高风险，`RISK_LEVEL_META`）是**另一个量**，不是这一维分数，没有改；抗跌度低 → 风险等级高，两者方向相反是本来就该有的，不是读反。
+  - 测试：新增 `desktop/test/market_state_labels.test.ts` 4 条；前后端 `tsc --noEmit` 0 错；`market_state + market_score` 81/81；desktop 全量 448/448。
+- **调度锁在「删文件被环境策略拦下」时会静默卡死约 11 分钟**。旧 API 后台日志实测 `[notify] 每拍钩子出错:[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":50,"threshold":50,"scope":"turn","targets":["…beat.lock"]}`：环境层的批量删除保护拦下 `fs.rmSync`，而 `notify.ts` 的 `unlock()` 裸调删除、**没有 try/catch**（同一文件里的 `touch()` 却包了），死锁清理那处也一样。后果链条：unlock 抛错 → 锁文件残留且 mtime 被 touch 过 → 要等 `staleMs`（约 11 分钟）才判死 → 期间所有 `tick` 静默返回 `skipped:「另一个后台进程正在调度」`。**不报错、只是不跑任务**，是最难发现的一类故障。
+  - 修法：**不碰调度语义、不碰任何判据**。新增 `LOCK_RELEASED = "released"` 与 `releaseLock()`：删得掉就删，删不掉就写释放标记 + `console.error` 显式告警，绝不把异常抛回 `finally`。`tryLock` 见到释放标记（或空文件）就覆盖重建；见到 `pid:token` 的活锁仍按原逻辑挡住。覆盖写不是严格原子互斥，但 `mine()` 自校验保证同一时刻最多一个进程认为自己是 owner，且这条路径只在降级场景出现。
+  - **没有绕沙箱策略**：全库 grep 不到 `safe-delete` 字样，那是环境层保护，改产品代码去对抗它只会把环境假设写进产品。运维上长期服务仍应双击 `启动VibeAStock.bat`，重启后手工清掉三把锁。
+  - 新增 `orchestrator/test/notify_lock.test.ts` 6 条。其中一条**真注入删除失败**（只让 `tick.lock` 的 `rmSync` 抛错）验证「写释放标记 + 告警 + 不抛 + 下一拍恢复」，不是只靠 mock；另有一条钉住源码不许再退回裸调 `rmSync`。
+- 🔴 **判据变更：赚钱效应缺腿时，仓位上限压到 40%（复用「闸门未评估」同一档）。** 经用户 2026-11-06 明确授权后落地，**会改变历史回测结论**，故单列写清证据、影响面与留白。
+  - 证据：`positionCapOf` 早就有 `unknownCap = 有 unknown ? 40 : 100`，注释原话「前者给满仓等于拿取数故障当利好」。但板块共振 / 板块资金流缺失**不进** `gate.unknown`，分数按 `min(中性先验, 已看到部分的加权均值)` 补位后看着正常 → 三闸门全过时能直接给到 **100% 上限**，绕过了自家防线。同一类「数据不全」，一条被挡、一条没被挡。
+  - 改动后实跑 `deriveMarketSignal`（涨停 80 / 广度 87% / 三闸门全过）的对照：
+    | 数据情况 | composite | 仓位上限 | `incomplete_legs` |
+    |---|---:|---:|---|
+    | 双腿全缺 | 73 | **40%** | 板块共振、板块资金流 |
+    | 只缺资金流 | 75 | **40%** | 板块资金流 |
+    | 数据齐 | 75 | **100%** | 空 |
+    `positionCapOf(78, 三门全过)` 不传第三参仍是 `100`（向后兼容），传 `{dataIncomplete:true}` 才是 `40`。注意 `40%` 仍是「可轻仓试探」（`can_open_position=true`），与既有 `unknownCap` 语义一致 —— **压仓不等于禁买**。
+  - 修法：`positionCapOf` 加可选 `opts.dataIncomplete`，新增 `completenessCap`，四者取小；常量 `INCOMPLETE_DATA_CAP_PCT = 40` **复用已有档位、不引入第二套标准**。`deriveMarketSignal` 把 `missingLegs` 提前并传入，`MarketSignal` 新增 `incomplete_legs` 结构化字段；`notes` 与 `recommendation.reason` 都写明「缺哪条腿 / 上限因此压到 40%」，理由走结构化字段而不是去 `notes` 里搜文案（措辞一改就静默失效的教训见 `evaluateMarketGate`）。
+  - **没动**：五维分数公式、权重、阶段判定、三道闸门定义、`riskLevel` 分档、中性补位算法。完备性只约束「这个结论能用到多重的仓」。
+  - **影响面（重要）**：`market_state.test.ts` 里「涨停 80 + 三闸门全过」那条用例原本传的是空 `{}` fixture（= 双腿全缺），却断言 `position_cap_pct=70` —— 这正是漏洞的现场样本。已改成断言 40 并写明原因，**不是把 bug 固化成期望**；另加一条「数据齐」对照用例证明好日子没被误杀。`positionCapOf` 不传第三参时行为逐位不变，旧调用零影响。
+  - **档位口径留白**：一律 40，**没有**分「缺 1 腿 / 缺 2 腿」。现有 15 份 `em_market_trend` 快照且 `ma20` 几乎全 `fail`，样本不足以给档位定值，不拿 15 天数据装回测。以后要细分，先用转正后的 `scripts/gate_probe.ts` 回放取证再拍。
+- **「缺腿压仓」的说明原本在页面上看不见（又被静默了一次）**。`marketStateViewAct` 给 `view.notes` 只填了取数降级 + 闸门说明，而 `deriveMarketSignal` 产出的 notes（事件面没算出 / 闸门未评估 / 赚钱效应缺腿）只留在 `view.signal.notes`；前端「降级提示」渲染的恰恰是 `view.notes`。现在两处共用同一个 `allNotes` 数组，不再出现「同一份数据两个说法」。实机确认 `view.notes === signal.notes`，3 条提示全部可见。
+- **实机抓到的文案自相矛盾**：2026-11-06 真实读数 `cap=0`（三门全灭、极高风险），`reason` 却同时写「仓位上限归零」和「仓位上限压到 40%」—— 40% 是**天花板**，取小之后完全可能更低。改为：只在完备性真是约束项（缺腿时 `cap === 40`）才写「压到 40%」；`notes` 一律写「最多 40%」并附实际值（`实际 0%`）。新增一条测试钉住「闸门已压得更低时不许再说『压到 40%』」。
+- **增量门禁会把负载偶发误报成真实回归**。`test-delta.mjs` 判定「并行跑红、单跑通过」用的是「单独重跑**整个文件零失败**」，但基线里本来就有必挂用例（`audit_chain` 的 `EPERM symlink`）的文件**永远不可能零失败** → 该文件里任何负载波动都会被报成「本次改动引入」。2026-11-06 连续两次门禁分别误报 `startup_*` 3 条、`audit_chain` 1 条，逐条单独重跑均通过。改为按**用例名**比对单跑结果：候选用例单跑仍红才报新增，否则标 flaky；真实回归不会被这层判定吞掉。
+
+- 🔴 **全项目审计后的 P0 收口：四项「不报错、只会把错的/旧的数据当真」的静默风险**（2026-11-06，用户授权「按建议修」）。**没有动任何判据、分数、权重、阈值、仓位档位**，改的全是「缺口怎么被如实带出来」和「缓存什么时候必须失效」。
+
+  - **① Core 缺省 `prefer_cache` 仍然可以永不过期。** 上一轮只在 `finance/` 里逐端点补了上限，`DEFAULT_CONSISTENCY` 本身仍是 `{mode:"prefer_cache"}` 不带 `max_age_ms`，`snapshotUsable()` 在 `limits.length === 0` 时无条件 `return true` —— 只要哪个调用方手写一份 `{mode:"prefer_cache"}`，「一次写入、永久命中」的洞就还在。审计还找到**第二套** `consistencyFor()`：`finance/shortline/history.ts` 给日记 / 环境 / 市场判断等路径返回不带上限的 `prefer_cache`。
+    - 修法：`snapshot.ts` 新增 `DEFAULT_PREFER_CACHE_MAX_AGE_MS = 2 * 60_000`，`DEFAULT_CONSISTENCY` 带上它；`snapshotUsable()` 在 `prefer_cache` 且一个上限都没有时**不再 `return true`**，而是强制 push 缺省上限 —— 结构口子堵在 Core，调用方手写也绕不过去。`cache_only` 保留原义（显式「离线 / 绝不联网」，有就用，不受时效影响）。
+    - `finance/snapshot_ttl.ts` 的兜底改成直接 import Core 常量（`SNAPSHOT_FALLBACK_MAX_AGE_MS = DEFAULT_PREFER_CACHE_MAX_AGE_MS`），两套兜底不许再分叉；`history.ts` 新增 `HISTORY_IMMUTABLE_MAX_AGE_MS = 30 天`，历史路径一律给显式上限，并加可选第 4 参 `endpoint` 让非日期端点走端点表。`market_call.ts` 的 `em_market_trend` 显式传 endpoint → 5 分钟（此前会套到历史路径的 30 天）；同处把写错的 `16:05` 改成实际的 `18:30`。
+    - **留白**：端点表仍只覆盖 18 个端点，`registry.json` 实测 182 个端点里 128 个没声明 `cache_max_age_sec`。现在有 Core 缺省兜底，不再「永不过期」，但逐端点精度仍欠着。
+  - **② `partial + 占位 0` 会被写进快照，下次打开把「没取到」读成「确实是 0」。** mapper 在上游没给数据时（非交易时段、池子为空）返回 `status=partial` + 一条 `value=0` 的展示用证据 + `missing`，而 `keepableForSnapshot()` 只看 `extra.no_cache`；这份 0 一旦落盘，下游只读 `value` 就再也分不出「没有」和「是 0」。
+    - 修法：`mappers.py` 新增统一 `no_data()` helper，产出「展示用占位证据 + `missing` + `status=partial` + `extra.no_cache=true` + `extra.placeholder_zero=true` + `degraded=原因`」；六处占位 0 路径改走它（`em_daily_dragon_tiger`、`em_zt_pools` 的跌停/炸板池、`em_hot_concept`、`ths_hot_reason`、`ths_hsgt_realtime`、`ths_limit_up_pool`）。`service.ts` 的 `keepableForSnapshot()` 显式拒 `placeholder_zero`。
+    - **刻意不一刀切禁掉所有 `partial`**：`em_market_trend` 常态就是 partial 但带 153 条有效证据，早先试过「partial 一律不缓存」，结果是每次打开重取 15–30 秒。这里只拦「会把缺口伪装成真值」的那一种。
+    - 顺带 `breadth_missing_field()` 按 note 性质把 missing field 分到 `market_dist_count` / `market_up_count` / `market_breadth`，不再把所有备注都写死成 `market_up_count`。
+  - **③ 涨跌分布走新浪备源时，证据署名仍写成东财。** `eastmoney.py` 主源分布桶没有 `source`，备源桶又把 `sina_updown_distribution()` 返回的 `source:"sina"` 丢了；`mappers.py` 生成 `market_dist_count` 证据时回退 `ctx["source"]="eastmoney"`，于是「东财断了、其实用的是新浪」这件事在证据链上消失。
+    - 修法：主桶显式 `source:"eastmoney"`、备源桶保留 `source:"sina"`；证据按桶透传真实 `source`，`extra.distribution_sources` 写出这次到底用了谁；note 写「改用新浪全市场快照聚合(备源 source=sina)」。`sina.py` 不用改。
+    - 口径不变：23 档分布合计与沪深京三所家数合计仍是两套口径（实测 5379 vs 5650），**不拿分布合计顶替三所家数**。
+  - **④ AI 复盘 / AI 周报 / 每日 Agent 复盘有缺口仍报 `ok`。** `runJob()` 默认写 `ok`，这三个任务把「段跳过 / 资料包缺口 / block 失败」只塞进消息或 note。更隐蔽的一处：`dailyReviewJob()` 正文生成了、但 `ledgerInsertMany` 没落进去时，只在消息里写一句「见任务状态」就照常报成功。
+    - 修法：三个 job 有缺口时显式返回 `status:"partial"`；`market_review.ts` 新增可注入的 `deps.save`，「正文生成了但研究记录没写进去」**直接抛错**（`Agent 复盘正文生成了,但研究记录没写进去:任务不能报成功`），消息里改成始终写明研究记录 id。
+    - **没动**：`runJob()` 默认 `ok` 的语义、「partial 也算今天跑过」（不反复重跑）、收件箱与重试逻辑。**留白**：只盘点了这三个明确的 AI 任务，其余 job 还没全量核对「跑完但有缺口」的情况。
+  - **本轮改动自己带出的两处回归，都已修掉、没有写进基线**：① `service.ts` 新注释里的「盘前」命中 `core_purity.test.ts` 的 Core 行业词表（`CEILING=0`），门禁如实报了 2 条新增失败 → 改成中性措辞「非交易时段的空响应」，单跑 `core_purity.test.ts` 8/8；② `eastmoney.py` 备源 note 写成 `改用sina…` 撞坏既有 `test_market_review.py` 的「新浪」断言 → note 改回中文并带 `source=sina`，新测试断言同步。**门禁没有靠调基线变绿。**
+
+- **P1 收口：五处「刷新 / 失败没被如实传下去」**（2026-11-07，全项目审计后续）。**判据、五维分数、权重、仓位档位一律未动**。
+  - ① `Opportunity.tsx` 三源 `Promise.allSettled` 全失败仍无条件记 `loadedAt` / `setFetchedAt` → 屏上是旧数却显示「数据 0s 前取的」，还会把「切回前台补刷」压住两分钟（最该重试的时候）。改为只有 `errs.length === 0` 才记，与 `MarketState.tsx` 成功分支同一口径；错误横幅与 `setLoading(false)` 不变。
+  - ② `shortline/register.ts` 的 `run` 写死 `{}`，`GET /view/shortline_overview?refresh=1` 的 query 被丢掉 —— 只有 POST act 能真刷新。`ViewDef.run` 本来就收 `query: Record<string,string>`，现原样交给 `shortlineOverviewAct`；`wantsFresh` 认字符串 `"1"`，无需额外转换。
+  - ③ 机会链 `opportunityScanAct()` 内部的 `marketStateAct(ctx, {}, signal)` 没带 force → 点刷新时子信号仍读缓存，同屏新旧混排。改为 `{ refresh: force }`。
+  - ④ `watch.ts` 的 `collector.lock` 释放仍是 `catch {}`，删不掉就静默留一把活锁（与已修的 `notify.ts` 调度锁同一个坑）。现在删不掉就写 `released` 标记 + `console.error` 显式告警；`ensureLock` 把空文件 / `released` 判为无主并**覆盖重建**，死锁仍按 90 秒判。文件不存在时保留 `wx` 严格互斥，只有无主 / 死锁路径才覆盖写，不扩大竞态面。
+  - ⑤ `day_opportunity.ts` 的 `packageHistory(...).catch(() => [])` 把具体异常吞成一句通用 gap。现在记下 `histError` 并附进 gap（`具体失败：…`），能看出是哪个环节挂了。
+- **文档口径统一**（不改代码行为）：README 原来只写「raw 超过 14 天删除、被引用的不删」，`VRA_RAW_KEEP_DAYS` 被当成全局开关；实际是**两套回收、清不同目录** —— `runs/<run>/raw/` 研究证据（14 天 / 有引用保护 / `VRA_RAW_KEEP_DAYS` / 调度器每天跑）与 `mcp/<session>/raw/` 取数缓存（30 天 / 只按 mtime / `VRA_RAW_RETENTION_DAYS` / 每次 `POST /fetch` 顺带）。改成并列写清，另补三处容易读错的分工：`test:delta` 是本机增量门禁、只覆盖 orchestrator 且 CI 不跑它（基线含本机沙箱专属失败）；CI 跑全量；`desktop/tsconfig.json` 不含 `test/`，typecheck 不检查测试文件。
+
+### 变更
+
+- **`orchestrator/gate_probe.tmp.ts` 转正为 `orchestrator/scripts/gate_probe.ts`**（原文件已删，内容完整迁移并增强，无资产损失）。原来写死 `../.local/snapshots`、必须从 `orchestrator/` 目录里跑才对，也不在 `tsconfig.include` 范围内、`git status` 是 `??` 未跟踪的孤儿文件 —— 换台机器就没。现在路径基于 `import.meta.url`，从任意 cwd 都能跑；输出补上完整快照文件名与总份数；`tsconfig.include` 补 `scripts/**/*.ts`。转正后 tsc 立刻抓到原本藏着的一处 `r.items` 可能为 undefined，已修。它现在是回放 15 份历史快照、核对闸门三态的取证工具，也是上一条判据变更以后调档位的对照工具。
+
+- **AI 盯盘自动轮询 10 分钟 → 3 分钟**（`useIntradayAiWatch` / `useAiWatch` 的 `POLL_INTERVAL_MS`，以及盯盘面板上那行「盘中自动 · N 分钟更新」的文案）。原来 10 分钟一轮时，一轮跑完页面已经「安静」了七八分钟，看起来像停了；3 分钟与前端其余轮询（盯盘概况 86 秒、判断页 2 分钟）同一量级。代价是**模型调用次数约 ×3**，长任务（要串好几轮工具）时仍按单飞跑，不会叠加。
+
+- **三个定时 AI 任务改用「接入 AI」保存的那一份**（`daily_review_ai` 18:55 / `shortline_review_ai` 19:02 / `weekly_ai_review` 周五 19:10）。它们跑的时候没有浏览器，此前读的是数据根 `config.json` 的 `provider.profile` + 环境变量里的 key —— 和用户在页面上选的那一份**可以是两家**，而界面上一片绿。2026-11-05 实测：侧栏写着「已接入AI」，三个任务却因为 `config.json` 里的模型名不是服务商认的名字全部 404，当天两篇复盘一篇没写出来，**没有任何一处提示**。
+  - 新增 `orchestrator/src/page_saved_llm.ts` + `GET/POST/DELETE /llm-saved`：页面「测试并保存」成功后，同一份配置落一份到 `<数据根>/llm.json`。
+  - `defaultLlm()` 的优先级改成：命令行 `--provider/--model/--config` ＞ 环境变量 `VRA_PROVIDER` ＞ **页面保存的那份** ＞ `config.json`。前三档都是当次显式选择，一律压过后一档。
+  - 落盘前按后台**同一条**解析链干跑一遍（`resolveRuntimeProvider`），认不出的来源 / 缺 key / 地址不合法当场拒，不存一份让任务天天报错的配置；页面上「清除」会连这份一起删，不留第二份没人管的 key。
+  - **读不懂就报错，不换家**：`llm.json` 存在但解析不了 / 没有 `provider` 时，任务直接失败并说明是哪个文件（`bad_llm`），不回落 `config.json` —— 那等于用户选了这家、账单和产出却来自另一家。
+  - **可见性**：设置页新增一行「收盘后的定时任务用哪一份」；`productInfo` 的 `provider` 改成**定时任务实际会用的那份**并带 `provider_source`（`page` / `config`），`config.json` 那份另放 `config_provider` 供诊断，`saved_llm` 给打码状态与「读不懂」的原因。
+  - **安全**：文件权限 0600（Windows 走 `icacls`，收不紧就删掉再报错）；`VRA_REMOTE=1` 拒绝写入；`GET /llm-saved` 只回 provider / 模型 / 端点（端点去掉 userinfo、query、fragment）/ 保存时间，**任何返回都不含 key**；不进日志、账本、研究产物。
+  - 前端一并改：`saveLlmEverywhere` / `clearLlmEverywhere`（`llm.ts`），保存失败时说的是「页面已保存、后台那份没存下」，既不冒充成功也不谎称全失败；设置页的主页快捷接入（`QuickAiConnect`）走同一条路。
+- **采集不再依赖页面**：新增 `startAlertCollector`（`orchestrator/src/finance/shortline/watch.ts`），进程起来就挂着：连续竞价每 3 秒一拍、集合竞价与收盘竞价 15 秒（先把名单和交易日历焐热，09:30:00 就能立刻判）、午休 60 秒；盘前和收盘后不采，直接睡到 09:16。页面退化成纯消费者：开着就刷新，切走只影响显示。
+- **不重复采、不重复记**：页面请求和后台采集走同一条路（`pollShared`），在途共用一份、2.5 秒内不重算；同一数据目录起了两个后台时靠 `<数据目录>/shortline/collector.lock` 只让一个进程采（持有者崩掉、超过 90 秒没动会被抢过来）。
+- **失败退避**：取数失败按 3→6→…→60 秒退避，同一个原因不重复刷日志；采集起不来只记一行，不影响别的功能。
+- **契约**：Core 的 `Plugin` 新增可选 `onStartup`（`plugin.ts`），由 `api.ts` 的 main 调用，金融包在 `finance/plugin.ts` 接上采集 —— Core 里不再出现垂类 import（core_purity 第 8 条）。`VRA_ALERT_COLLECTOR=off` 可关。
+- 页面副标题、空状态文案和 README 同步改成「后台自动采、页面关着也在采」。
+
+### 测试
+
+- 新增 `test/page_saved_llm.test.ts` 9 条：优先级（没存 → `config.json`／存了 → 页面那份／清掉 → 回落）、命令行与 `VRA_PROVIDER` 压过页面配置、坏文件报错且**不**偷换成另一家、定时任务拿到的来源指纹就是页面那份、`productInfo` 报 `provider_source: "page"`、下发状态不含 key（端点里的 userinfo/query 也抹）、落盘前校验被拒时不留任何文件、远程模式拒写、重复保存只留一份、文件权限 0600。
+- 新增 `desktop/test/ai_jobs_sync.test.ts` 5 条：保存时确实 POST 了同一份给后端、后端拒时如实说「页面已保存／后台没存下」、清除时确实 DELETE、后端没删掉时说出来（那份还带着 key）。
+- 新增 `test/shortline_collector.test.ts` 7 条：采集节奏、没人看也落盘、与页面共用不重复取/不重复记、非交易时段一拍不发也不碰锁、跨进程锁（不删别人的锁 / 抢死锁）、注册后的插件带 `onStartup` 且 `off` 能关。
+- 新增 `runtime_environment.test.ts` 1 条：`fetchEnv()` 必带 UTF-8 声明、子进程真的收到、中文标题原样交回且没有替换符。
+- 后端全套：无新增失败（基线 45 条既有失败照旧）；desktop 444/444；前后端类型检查通过。
+- 实机：临时数据目录起一次服务，日志出现 `[collector] 盘中常驻采集已启动`；已收盘时段没有建 `shortline/` 目录（按预期睡到 09:16）。
+- 本轮收尾复跑：`desktop` 全量 **448/448**、`market_state + market_score` **81/81**、前后端 `tsc --noEmit` 均 0 错；新增 `market_state_labels.test.ts` 4 条钉住「判据一字未动」。增量门禁 `test-delta.mjs` 无新增失败（Windows 沙箱既有失败基线不变）。
+- 本轮（判据变更 / 锁健壮性 / 探针转正 / 门禁修复）：`desktop` 全量 **448/448**、`market_state + market_score` **88/88**、新增 `notify_lock.test.ts` **6/6**、前后端 `tsc --noEmit` 均 0 错；**最终 `test-delta.mjs` 无新增失败、退出码 0**。orchestrator 全量 1766 条里 41 个失败全部落在既有基线（Windows 沙箱 `EPERM symlink` 等），基线文件 `known-failures.json` 保持 45 条**未被修改** —— 没有用 `--update-baseline` 掩盖任何失败。
+- 本轮（审计 P0 四项收口）：前后端 `tsc --noEmit` 均 0 错；`core_purity.test.ts` **8/8**；Python 定向 `test_eastmoney_pools.py + test_market_review.py` **31/31**；Python 三套全量 **1682 passed / 2 failed**（两条均为 Windows 沙箱无符号链接权限的 `os.symlink` 基线，与本轮无关）；orchestrator 定向 6 个文件 **101/102**（唯一失败同为 `EPERM symlink`）；**最终 `test-delta.mjs` 无新增失败、退出码 0** —— 本次失败 41 条全落在 45 条既有基线内，1 条负载偶发单跑通过，`known-failures.json` 仍是 45 条未改。
+  - 新增 / 加强的回归：`snapshot.test.ts`（`prefer_cache` 无上限时 1 小时前的快照必须判过期、刚取的仍命中；`DEFAULT_CONSISTENCY` 带上限；占位 0 不许进快照）、`opportunity.test.ts`（Core 缺省与 finance 兜底同源）、`shortline_history.test.ts`（历史路径不许再返回无上限 `prefer_cache`）、`shortline_review_job.test.ts` / `shortline_weekly_job.test.ts`（有缺口必须 `partial`）、`market_review_job.test.ts`（新增「正文生成了但台账没落进去 → 抛错」）、`test_eastmoney_pools.py`（6 条占位 0 路径都带 `no_cache`/`placeholder_zero`/`missing`；新浪备源署名）。
+  - **本轮明确没做的范围**（审计 P1/P2，仍是「诚实 / 直观」这条线上的欠账，不影响上述四项结论）：`shortline_overview` GET 丢 `refresh`、`opportunity.ts` 子信号未透传 `refresh`、`watch.ts` collector 锁静默吞删除失败、`Opportunity.tsx` 三源全失败仍刷新 `loadedAt`、逐端点 TTL 覆盖率、README 的 raw 回收口径三处不一致、门禁未覆盖 desktop / Python / CI、新增文件未纳入版本控制。
+
+- 本轮（P1 收口）：前后端 `tsc --noEmit` 均 0 错；定向五处 **88/88**；新增 `desktop/test/opportunity_freshness.test.ts` 2 条、`orchestrator/test/refresh_propagation.test.ts` 4 条、`shortline_collector.test.ts` 真注入删除失败 1 条（断言释放标记 + 显式告警 + 下一台采集器立刻接管，不等 90 秒）；**desktop 全量 450/450**；Python 三套 **1682 passed / 2 failed**（两条 `os.symlink` WinError 1314 权限基线）；**`test-delta.mjs` 无新增失败、退出码 0**（42 条失败全在 45 条基线内，1 条负载偶发单跑通过，`known-failures.json` 保持 45 条未改）。
+- 仍未处理的 P2：逐端点 TTL 覆盖率 18/182；自动刷新多为 `load(false)`、不保证上游真重取；`BreadthBody` 可能把 0 显示成真值；`risk_level` 徽标与「抗跌度」并列仍有读反风险；`DailyReview` 无自动刷新；`release_version.test.ts` 不校验 git tag；门禁未覆盖 desktop / Python（README 已写明分工）。**缺腿压仓分档仍待样本**，不拿 15 份快照装回测。
+
 ## [2.1.4] - 2026-10-26
 
 修独立安装的 CodeBuddy CLI 未登录时，WorkBuddy 已登录仍报未登录的问题（提交 `5d6d2e2`），移植自 Vibe Research v2.2.4 的同一修复（Vibe Research #56）；短线功能和页面用法都没有变化。

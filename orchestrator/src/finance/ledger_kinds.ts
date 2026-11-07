@@ -117,7 +117,7 @@ export const FINANCE_ENUM_LABELS: Record<string, string> = {
   backtest: "回测", compare: "研究对比",
   opening: "期初持仓", buy: "买入", sell: "卖出", dividend: "现金分红", split: "送转 / 拆股",
   加仓: "加仓", 持有: "持有", 减仓: "减仓", 观望: "观望",
-  偏多: "偏多", 中性: "中性", 偏空: "偏空",
+  偏多: "偏多", 中性偏多: "中性偏多", 中性: "中性", 中性偏空: "中性偏空", 偏空: "偏空",
   above: "≥", below: "≤",
   ...DIRECTION_LABELS,
   ...Object.fromEntries(VERIFY_METRICS.map((m) => [m.key, m.label])),
@@ -576,7 +576,7 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
     properties: {
       date: { type: "string", format: "date" },
       call: { type: "string", enum: ["加仓", "持有", "减仓", "观望"] },
-      direction: { type: "string", enum: ["偏多", "中性", "偏空"] },
+      direction: { type: "string", enum: ["偏多", "中性偏多", "中性", "中性偏空", "偏空"] },
       /** 一句话定性(全景报告正文的那句) */
       basis: TEXT(120),
       /** 触发条件原文(如「广度破 45% 转减」) */

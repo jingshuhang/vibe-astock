@@ -11,6 +11,7 @@
  * 只陈述客观读数,不排序打分、不给买卖倾向。
  */
 import { fetchEndpoint, type FetchResult, type ServiceContext } from "../../service.ts";
+import { consistencyFor, wantsFresh } from "../snapshot_ttl.ts";
 import { clockOf } from "./intraday.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 import { deriveMarketSignal, buildMarketStateView, gateDataFrom, cctvTitlesFrom, type MarketGateData, type MarketProvenance } from "../market_state.ts";
@@ -417,11 +418,17 @@ function phaseLabel(hm: string): string {
 
 export async function shortlineOverviewAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   signal: AbortSignal,
   deps: { fetch?: Fetch } = {},
 ): Promise<OverviewView> {
-  const fetch: Fetch = deps.fetch ?? fetchEndpoint;
+  // 🔴 这个视图原来也把 `body` 写作 `_body`、从不读 —— 页面「刷新」点了等于没点。
+  const force = wantsFresh(body?.refresh);
+  // 统一在这里套一层：**所有**取数（含 6 个类型化块 + 3 个闸门端点）都拿到时效上限，
+  // 不用逐个调用点改 —— 逐个改最容易漏掉最新加的那一个。
+  const upstream: Fetch = deps.fetch ?? fetchEndpoint;
+  const fetch: Fetch = (c, req) =>
+    upstream(c, { ...req, consistency: consistencyFor(String(req.endpoint ?? ""), force) } as Parameters<Fetch>[1]);
   const now = new Date();
   const { day, hms } = clockOf(now);
   const notes: string[] = [];

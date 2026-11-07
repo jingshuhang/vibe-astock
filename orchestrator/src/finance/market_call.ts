@@ -5,7 +5,7 @@
  * 这里接的是它**机器可比对**的那一小份结论(§5.1 四档口径:加仓/持有/减仓/观望 + 依据 + 触发条件)。
  * 交接通道是文件,不是 HTTP —— 全景侧把结构化结论写成
  *   `<dataRoot>/inbox/market_call/YYYY-MM-DD.json`
- * 本模块的定时任务(16:05)扫描落账,次日收盘后对账触发条件。三条纪律:
+ * 本模块的定时任务(18:30)扫描落账,次日收盘后对账触发条件。三条纪律:
  *   1. 🔴 只存全景产出的判断,**本系统不生成任何大盘建议** —— 台账种类标 managedWrites,通用接口写不进。
  *   2. 幂等:同一份 JSON 重扫、同日再写,`ledgerReplace` 正文没变就不动(updated_at 不变)。
  *   3. 触发条件尽量结构化(读数 + 比较 + 阈值),机器判命中;判不了的(trigger_hit 缺省)如实留白,
@@ -38,7 +38,14 @@ const SETTLE_AFTER_HM = "15:30";
 /** 广度/趋势是当日盘后读数,收盘后 15 分钟内的缓存都算新鲜 */
 const FRESH_MAX_AGE_MS = 15 * 60 * 1000;
 const CALL_ENUM = ["加仓", "持有", "减仓", "观望"] as const;
-const DIR_ENUM = ["偏多", "中性", "偏空"] as const;
+/**
+ * 交易倾向的档位。**五档,不是三档** —— 2026-11-05 的落件把 direction 写成「中性偏多」,
+ * 被三档枚举判为不合法、原件留在 inbox,于是台账整整缺了一天,而 job 只报 `ok`。
+ * 「中性偏多 / 中性偏空」是全景档的真实表述,不是脏数据,所以放宽下游而不是改写上游原话
+ * (这张台账只存档上游判断,不许把「中性偏多」悄悄归一成「偏多」)。
+ * 🔴 顺序按「由多到空」排,但**没有**任何地方把它当有序变量做数值映射 —— 扩档不会影响统计。
+ */
+const DIR_ENUM = ["偏多", "中性偏多", "中性", "中性偏空", "偏空"] as const;
 const METRIC_ENUM = ["breadth_pct", "limit_up", "limit_down", "amount_yi"] as const;
 const OP_ENUM = ["above", "below"] as const;
 type TriggerMetric = (typeof METRIC_ENUM)[number];
@@ -88,7 +95,7 @@ export function parseCallJson(raw: unknown): { ok: true; call: CallIngest } | { 
   const call = str(raw.call);
   if (!call || !(CALL_ENUM as readonly string[]).includes(call)) return { ok: false, why: `call 不是四档之一(${CALL_ENUM.join("/")})` };
   const direction = str(raw.direction);
-  if (!direction || !(DIR_ENUM as readonly string[]).includes(direction)) return { ok: false, why: `direction 不是三档之一(${DIR_ENUM.join("/")})` };
+  if (!direction || !(DIR_ENUM as readonly string[]).includes(direction)) return { ok: false, why: `direction 不是合法档位(${DIR_ENUM.join("/")})` };
   const metric = str(raw.trigger_metric);
   const op = str(raw.trigger_op);
   const th = num(raw.trigger_value);
@@ -318,7 +325,7 @@ async function readingsFor(
     // 🔴 只能要 60 天以上:底层 market_index_trend 硬校验 60~600,传 30 会被直接拒
     //    (`ValueError: days 须在 60~600 之间`),而这里只用到对账那一天的成交额,
     //    曾经写 30 导致每一次对账都「指数趋势没取到」—— 看着像上游坏了,其实是参数越界。
-    const t = await fetcher(ctx, { endpoint: "em_market_trend", args: { days: 60 }, consistency: consistencyFor(next, oldest, false), signal });
+    const t = await fetcher(ctx, { endpoint: "em_market_trend", args: { days: 60 }, consistency: consistencyFor(next, oldest, false, "em_market_trend"), signal });
     const env = t.envelope as { status?: string };
     if (env?.status === "failed") gaps.push(`指数趋势没取到(${failedNote(t.envelope) || "没取到"})`);
     else {
@@ -568,8 +575,13 @@ export async function marketCallViewAct(ctx: ServiceContext, _query: Record<stri
 
 // ─── 定时任务 ──────────────────────────────────────────────────────────────────
 
-/** 16:05:先扫 inbox 落账,再对账所有到期的。只列事实,不推送消息 */
-export async function marketCallJob(j: { ctx: ServiceContext; now: Date; signal: AbortSignal }, deps: CallDeps = {}): Promise<{ messages: []; note: string }> {
+/**
+ * 16:05:先扫 inbox 落账,再对账所有到期的。只列事实,不推送消息。
+ *
+ * 🔴 有缺口时返回 `status: "partial"`:以前不管成没成都记 `ok`,界面显示「已运行」,
+ *    缺口只藏在 note 里 —— 台账少了一天、某个读数没取到,不点开就看不见,等于静默丢数据。
+ */
+export async function marketCallJob(j: { ctx: ServiceContext; now: Date; signal: AbortSignal }, deps: CallDeps = {}): Promise<{ messages: []; note: string; status: "ok" | "partial" }> {
   const scan = scanInbox(j.ctx, j.now);
   const settle = await settleCalls(j.ctx, j.now, j.signal, deps);
   const gaps = [...scan.gaps, ...settle.gaps];
@@ -580,5 +592,5 @@ export async function marketCallJob(j: { ctx: ServiceContext; now: Date; signal:
   // 修过就说出来:这份落件本来会让台账静默缺一天,补齐了也不能当没发生
   if (scan.repaired) parts.push(`其中 ${scan.repaired} 份落件的路径少了反斜杠转义(如 C:\\Users 写成了 C:\Users),已自动补齐`);
   if (gaps.length) parts.push(`缺口 ${gaps.length} 条:${gaps.slice(0, 3).join(";")}${gaps.length > 3 ? " 等" : ""}`);
-  return { messages: [], note: parts.join(";") };
+  return { messages: [], note: parts.join(";"), status: gaps.length ? "partial" : "ok" };
 }

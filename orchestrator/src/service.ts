@@ -25,6 +25,7 @@ import { pruneRawResponses } from "./raw_retention.ts";
 import { ChatError, REPLY_TRUNCATED, applyGate, chatSend as chatSendCore, llmProbe as llmProbeCore, parseHeadlineTranslationReply, prepareHeadlineTranslation, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult, type LlmProbeResult } from "./chat.ts";
 import { DirectTransportError, chatCompletion } from "./engines/direct_transport.ts";
 import { REQUEST_LLM_META_VAR, RUNTIME_KEY_VAR, assertExecutionMode, defaultLlm, requestLlmMeta, resolveDirectProvider, resolveRuntimeProvider, resolveSelectedRuntime, runtimeSourceFingerprint, RuntimeProviderError, templateMatrix, type LlmOverride, type DefaultSourceOptions } from "./runtime_provider.ts";
+import { clearSavedLlm, readSavedLlm, savedLlmStatus, writeSavedLlm } from "./page_saved_llm.ts";
 import { DebateError, MAX_DEBATE_MESSAGE, DEBATE_TURN_TIMEOUT_MS, advanceDebate, startDebate, type DebateState } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
 import { LedgerError, checkRecord as checkLedgerRecord, insertRecords as insertLedgerRecords, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, replaceRecords as replaceLedgerRecords, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
@@ -405,7 +406,10 @@ export function keepableForSnapshot(r: FetchResult): boolean {
   // 这条以前只写在 degraded 的中文句子里、靠 status=partial 隐式传达,于是上层只能用
   // 「partial 一律不缓存」这种粗规矩 —— 代价是 partial 但有证据的正常结果也永不缓存。
   // 现在是明确的结构化标记:该不缓存的照旧不缓存,该缓存的(常态 partial)能缓存。
-  const env = r.envelope as { extra?: { no_cache?: unknown } };
+  const env = r.envelope as { extra?: { no_cache?: unknown; placeholder_zero?: unknown } };
+  // 🔴 上游没给数据时 mapper 会返回「partial + 占位 0 + 有证据」。界面可以带说明展示,
+  //    但这份 0 绝不能写进快照 —— 否则一次非交易时段的空响应会被记住,下次打开把「没取到」读成「确实是 0」。
+  if (env.extra?.placeholder_zero === true) return false;
   return env.extra?.no_cache !== true;
 }
 
@@ -1242,38 +1246,89 @@ const LOCAL_AGENT_LABEL: Record<string, string> = {
   "cli-claude": "Claude Code 订阅", "cli-codex": "Codex 订阅", "cli-codebuddy": "WorkBuddy / CodeBuddy 订阅",
 };
 
+/** 一份来源的只读描述。**只有环境变量的名与「设没设」,任何情况下都不含密钥值。** */
+function describeProviderSource(
+  ctx: ServiceContext, dataRoot: string, id: string,
+  opts: { fromPageFile?: boolean; hasKey?: boolean; model?: string | null; baseURL?: string | null } = {},
+): { provider: Record<string, unknown>; configError: string | null } {
+  const base = {
+    profile: id, kind: null, label: null, base_url: null, env_key: null, key_present: null,
+    verification: null, model: opts.model ?? null,
+  };
+  let provider: Record<string, unknown> = base;
+  let configError: string | null = null;
+  if (id.startsWith("cli-")) {
+    provider = { ...base, kind: "local_agent", label: LOCAL_AGENT_LABEL[id] ?? id };
+    if (!Object.hasOwn(LOCAL_AGENT_LABEL, id)) configError = `后台默认 AI 来源 ${id} 不是支持的本机订阅 Agent(cli-claude / cli-codex / cli-codebuddy)`;
+    return { provider, configError };
+  }
+  provider = { ...base, kind: "api" };
+  try {
+    const { profile } = loadProviderProfile(ctx.repoRoot, dataRoot, id);
+    const cap = apiCapabilityOf(profile);
+    // 页面保存的那份:key 在 `<数据根>/llm.json` 里,与模板声明的环境变量无关 —— 报 env_key 会指错地方
+    provider = {
+      ...provider, label: profile.name, base_url: displayUrl(cap.usable ? cap.baseURL : profile.base_url),
+      env_key: opts.fromPageFile ? null : profile.env_key,
+      key_present: opts.fromPageFile ? Boolean(opts.hasKey) : Boolean(process.env[profile.env_key]),
+      verification: apiVerificationOf(profile),
+    };
+    if (!cap.usable) configError = cap.reason;
+  } catch (error) {
+    // 自填端点(`custom` / `openai-compatible` 或界面上没有模板的厂商)**本来就没有模板** ——
+    // 这不是"配置坏了",是这一类来源的正常形态。页面那份带着自己的 Base URL,照它描述。
+    if (opts.fromPageFile && opts.baseURL) {
+      return {
+        provider: { ...provider, label: "自定义端点", base_url: displayUrl(opts.baseURL), env_key: null, key_present: Boolean(opts.hasKey) },
+        configError: null,
+      };
+    }
+    // 模板读不动 / 有占位符:如实报出来。只回我们自己的措辞(过一遍 redact 做纵深防御)
+    configError = redact(error instanceof Error ? error.message : String(error), 300);
+  }
+  return { provider, configError };
+}
+
 /**
  * 设置页要看的有效配置。**只读,不含任何密钥值** —— 只有环境变量的**名**与「设没设」。
  * ⚠️ 模板读不动 / 不可用时**照常返回**,问题放在 `config_error` 里:直接抛的话设置页在
  *    「配置有问题」时反而什么都显示不出来,而那恰恰是最需要看它的时候。
- * `provider` 描述的是**后台默认 AI 来源**(页面没选来源时用它);profile 为 null = 没有默认,页面必须自己选。
+ *
+ * 🔴 `provider` 是**定时任务/后台默认实际会用的那一份**,判定与 `defaultLlm` 完全同一套:
+ *    页面「接入 AI」保存过就用那一份(`provider_source: "page"`),否则用 `config.json` 里的。
+ *    只报 config.json 的话,页面选的是 A、三个定时任务跑的是 B,界面上还写着 B 一切正常 ——
+ *    2026-11-05 实测就是这么丢了一天两篇复盘。config.json 那份另放 `config_provider` 供诊断。
+ * `provider_source` 为 null = 一份都没有,页面必须自己选。
  * 本机订阅 Agent 的登录状态不在这里探测(那要起子进程),看 `/local-agents`。
  */
 export function productInfo(ctx: ServiceContext): Record<string, unknown> {
   const pc = loadProductConfig(ctx.repoRoot, { dataRootOverride: ctx.dataRoot });
   const dataRoot = pc.resolved.dataRoot;
-  const id = pc.provider.profile;
-  let provider: Record<string, unknown> = { profile: null, kind: null, label: null, base_url: null, env_key: null, key_present: null, verification: null };
-  let configError: string | null = null;
-  if (id && id.startsWith("cli-")) {
-    provider = { ...provider, profile: id, kind: "local_agent", label: LOCAL_AGENT_LABEL[id] ?? id };
-    if (!Object.hasOwn(LOCAL_AGENT_LABEL, id)) configError = `后台默认 AI 来源 ${id} 不是支持的本机订阅 Agent(cli-claude / cli-codex / cli-codebuddy)`;
-  } else if (id) {
-    provider = { ...provider, profile: id, kind: "api" };
-    try {
-      const { profile } = loadProviderProfile(ctx.repoRoot, dataRoot, id);
-      const cap = apiCapabilityOf(profile);
-      provider = { ...provider, label: profile.name, base_url: displayUrl(cap.usable ? cap.baseURL : profile.base_url),
-        env_key: profile.env_key, key_present: Boolean(process.env[profile.env_key]), verification: apiVerificationOf(profile) };
-      if (!cap.usable) configError = cap.reason;
-    } catch (error) {
-      // 模板读不动 / 有占位符:如实报出来。只回我们自己的措辞(过一遍 redact 做纵深防御)
-      configError = redact(error instanceof Error ? error.message : String(error), 300);
-    }
-  }
+  const configProfile = pc.provider.profile;
+  const saved = readSavedLlm(dataRoot);
+  // 与 defaultLlm 同一判定:环境变量显式指定了来源时,页面保存的那份不生效
+  const envOverride = Boolean(String(process.env.VRA_PROVIDER ?? "").trim());
+  const pageInEffect = Boolean(saved.source) && !envOverride;
+
+  const configDesc = configProfile
+    ? describeProviderSource(ctx, dataRoot, configProfile, { model: pc.defaults.model ?? null })
+    : { provider: { profile: null, kind: null, label: null, base_url: null, env_key: null, key_present: null, verification: null, model: null }, configError: null };
+  const effective = pageInEffect && saved.source
+    ? describeProviderSource(ctx, dataRoot, saved.source.provider, {
+        fromPageFile: true, hasKey: Boolean(saved.source.apiKey), model: saved.source.model ?? null,
+        baseURL: saved.source.baseURL ?? null,
+      })
+    : configDesc;
+
   return {
     version: productVersion(),
-    provider,
+    provider: effective.provider,
+    /** 定时任务实际用哪一份:"page" / "config" / null */
+    provider_source: pageInEffect ? "page" : configProfile ? "config" : null,
+    /** `config.json` 里写的是谁(仅供诊断;不一定在生效) */
+    config_provider: configDesc.provider,
+    /** 页面保存的那一份:打码状态 + 读不懂时的原因(见 page_saved_llm.ts) */
+    saved_llm: savedLlmStatus(dataRoot),
     defaults: { ...pc.defaults },
     /**
      * 产品自带的 provider 模板 —— 界面据此标「已实测 / 有模板未实测」。
@@ -1288,8 +1343,66 @@ export function productInfo(ctx: ServiceContext): Record<string, unknown> {
     sources: [...pc.sources],
     /** 读到了、但 v2 不再使用的旧配置键 / 旧环境变量 */
     ignored_legacy: [...pc.ignoredLegacy],
-    config_error: configError,
+    // 生效那份的问题优先(它挡着任务跑);页面配置坏了也算,因为那正是任务现在跑不动的原因
+    config_error: saved.problem ?? effective.configError,
   };
+}
+
+/** 定时任务此刻**实际**会用哪一份来源(打码)。与 `defaultLlm` 同一判定,供界面显示「定时任务当前用:…」。 */
+export function jobsAiSummary(ctx: ServiceContext): { layer: "page" | "config" | null; provider: string | null; model: string | null } {
+  const pc = loadProductConfig(ctx.repoRoot, { dataRootOverride: ctx.dataRoot });
+  const saved = readSavedLlm(pc.resolved.dataRoot);
+  const envOverride = Boolean(String(process.env.VRA_PROVIDER ?? "").trim());
+  if (saved.source && !envOverride) return { layer: "page", provider: saved.source.provider, model: saved.source.model ?? null };
+  if (pc.provider.profile) return { layer: "config", provider: pc.provider.profile, model: pc.defaults.model ?? null };
+  return { layer: null, provider: null, model: null };
+}
+
+/** GET `/llm-saved`:页面保存的那一份(打码) + 定时任务当前实际用哪一份。**都不含 key。** */
+export function savedLlmOverview(ctx: ServiceContext): Record<string, unknown> {
+  return { ...savedLlmStatus(ctx.dataRoot), jobs_ai: jobsAiSummary(ctx) };
+}
+
+/**
+ * POST `/llm-saved`:把页面「测试并保存」成功的那一份落盘,给定时任务用。
+ *
+ * 🔴 远程访问模式下拒写:那会儿页面可能是网络上另一台机器投过来的,
+ *    把它的 key 存到这台盘的持久化面上,超出了「本机自己的配置」这件事的边界。
+ * 🔴 落盘前按后台**同一条**解析链校验一遍:认不出的 provider / 缺 key / 地址不合法当场拒,
+ *    免得存下一份让三个定时任务天天报错的配置。
+ */
+export function saveSavedLlm(ctx: ServiceContext, body: unknown): Record<string, unknown> {
+  if (String(process.env.VRA_REMOTE ?? "") === "1") {
+    throw new ServiceError("remote_saved_llm_forbidden",
+      "远程访问模式下不把模型密钥保存到这台机器：请在本机打开「接入 AI」保存，或继续用后台配置文件里的默认来源");
+  }
+  const raw = (body ?? {}) as Record<string, unknown>;
+  const source = checkLlmShape(raw.source ?? raw.llm);
+  if (!source) throw new ServiceError("bad_llm", "缺少 source：要保存的是页面里那一份 AI 配置");
+  try {
+    // 干跑一遍:这一份能不能被后台认出来,现在就说清楚(错误码与页面提问时同一个)
+    resolveRuntimeProvider(ctx.repoRoot, ctx.dataRoot, source);
+  } catch (error) {
+    if (error instanceof RuntimeProviderError) throw new ServiceError(error.code, error.message);
+    throw new ServiceError("bad_llm", error instanceof Error ? error.message : String(error));
+  }
+  try {
+    writeSavedLlm(ctx.dataRoot, source);
+  } catch (error) {
+    throw new ServiceError("saved_llm_write_failed", error instanceof Error ? error.message : String(error));
+  }
+  return { ok: true, ...savedLlmOverview(ctx) };
+}
+
+/** DELETE `/llm-saved`:页面上清除了 AI 配置 → 后台这份跟着删,不留第二份独立配置。 */
+export function clearSavedLlmRoute(ctx: ServiceContext): Record<string, unknown> {
+  let removed = false;
+  try {
+    removed = clearSavedLlm(ctx.dataRoot);
+  } catch (error) {
+    throw new ServiceError("saved_llm_clear_failed", error instanceof Error ? error.message : String(error));
+  }
+  return { ok: true, removed, ...savedLlmOverview(ctx) };
 }
 
 /** 设置页的真实本机运行时状态。只返回可公开的版本与布尔状态，不返回路径、账号或组织。 */

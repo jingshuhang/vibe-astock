@@ -19,6 +19,7 @@ import {
   weightedComposite,
   riskLevelOf,
   positionCapOf,
+  INCOMPLETE_DATA_CAP_PCT,
   MARKET_WEIGHTS,
 } from "../src/finance/market_score.ts";
 
@@ -360,6 +361,40 @@ describe("仓位上限:分数梯档 ∩ 闸门梯档", () => {
   });
 });
 
+/**
+ * 🔴 2026-11-06 补的覆盖面：闸门没评估时早就压到 40%，但赚钱效应缺腿（共振 / 资金流
+ *    没取到）不进 gate.unknown，分数按中性补位看着正常 → 实测 composite 78 直接给到 100% 上限。
+ *    同一类「数据不全」两条路径一条挡一条不挡。这里复用同一档天花板，不另设标准。
+ */
+describe("仓位上限:数据完备性(与闸门未评估同一档)", () => {
+  const pass = { blockers: [] as string[], unknown: [] as string[] };
+
+  it("缺腿时不许给满档,分数再高也压住", () => {
+    assert.equal(INCOMPLETE_DATA_CAP_PCT, 40, "刻意复用「闸门未评估」那一档,不引入第二套标准");
+    assert.equal(positionCapOf(78, pass, { dataIncomplete: true }), 40);
+    assert.equal(positionCapOf(95, pass, { dataIncomplete: true }), 40);
+  });
+
+  it("数据齐时一分不压,不许误杀好日子", () => {
+    assert.equal(positionCapOf(78, pass), 100);
+    assert.equal(positionCapOf(78, pass, { dataIncomplete: false }), 100);
+  });
+
+  it("闸门已经压得更死时不许被完备性抬高,取小始终成立", () => {
+    assert.equal(positionCapOf(80, { blockers: ["a", "b"] }, { dataIncomplete: true }), 20);
+    assert.equal(positionCapOf(80, { blockers: ["a", "b", "c"] }, { dataIncomplete: true }), 0);
+    assert.equal(positionCapOf(35, pass, { dataIncomplete: true }), 20);
+  });
+
+  it("向后兼容:不传第三参时行为与改动前逐位一致", () => {
+    assert.equal(positionCapOf(80, pass), 100);
+    assert.equal(positionCapOf(65, pass), 70);
+    assert.equal(positionCapOf(50, pass), 40);
+    assert.equal(positionCapOf(35, pass), 20);
+    assert.equal(positionCapOf(20, pass), 0);
+  });
+});
+
 describe("退潮盘面下龙头维度不许靠独苗连板刷分", () => {
   it("广度 < 35% 且 跌停 ≥ 涨停 时,龙头分上限 55", () => {
     const d = scoreMarket({
@@ -408,8 +443,48 @@ describe("赚钱效应不吃「Top10 共振均值」的送分", () => {
   });
 });
 
-describe("权重定义", () => {
-  it("五项原始权重之和为 1", () => {
+/**
+ * 🔴 2026-11-07:缺腿不许当 0 分,也不许当成利好。
+ *
+ * 旧写法「共振没取到 → 0、资金流没取到 → 0」会让数据源抽风那天凭空少 25 / 20 分,
+ * 表现成「今天很差」;而单纯把权重全让给广度又会反过来把故障日算成好日子。
+ * 现在的口径:缺的腿按 `min(中性先验, 已看到部分的加权均值)` 补位。
+ */
+describe("赚钱效应缺腿:按中性补位,既不按 0 也不按最优", () => {
+  const 大涨 = { limit_up: 80, limit_down: 1, up: 2000, down: 200, flat: 100 };
+  const 齐全 = { resonanceRates: [0.6], resonanceShare: 0.6, inflowRate: 0.5 };
+  const 全缺 = { resonanceRates: [], resonanceShare: null, inflowRate: null };
+
+  it("共振与资金流都没取到:分数高于「按 0 算」,低于数据齐全的好日子", () => {
+    const miss = scoreMarket({ ...大涨, ...全缺, promotionRate: null, ladderHighest: null });
+    const full = scoreMarket({ ...大涨, ...齐全, promotionRate: null, ladderHighest: null });
+    const zero = scoreMarket({ ...大涨, resonanceRates: [0], resonanceShare: 0, inflowRate: 0, promotionRate: null, ladderHighest: null });
+    assert.ok(miss.earning > zero.earning, `缺数据(${miss.earning})不该比真的差(${zero.earning})还低`);
+    assert.ok(miss.earning < full.earning, `缺数据(${miss.earning})不该比数据齐全的好日子(${full.earning})还高 —— 那是取数故障当利好`);
+  });
+
+  it("只缺共振 / 只缺资金流:都能算出来,且只比齐全时低一点", () => {
+    const noRes = scoreMarket({ ...大涨, resonanceRates: [], resonanceShare: null, inflowRate: 0.5, promotionRate: null, ladderHighest: null });
+    const noFlow = scoreMarket({ ...大涨, resonanceRates: [0.6], resonanceShare: 0.6, inflowRate: null, promotionRate: null, ladderHighest: null });
+    const full = scoreMarket({ ...大涨, ...齐全, promotionRate: null, ladderHighest: null });
+    assert.ok(noRes.earning > 0 && noFlow.earning > 0);
+    assert.ok(noRes.earning <= full.earning && noFlow.earning <= full.earning);
+  });
+
+  it("显式给 0 仍然按 0 算:那是「真的差」,不是「没数据」", () => {
+    const a = scoreMarket({ ...大涨, resonanceRates: [], resonanceShare: 0, inflowRate: 0, promotionRate: null, ladderHighest: null });
+    const b = scoreMarket({ ...大涨, resonanceRates: [], resonanceShare: null, inflowRate: null, promotionRate: null, ladderHighest: null });
+    assert.ok(a.earning < b.earning, `显式 0(${a.earning})应低于没数据(${b.earning})`);
+  });
+
+  it("盘面很差时缺腿不会把分数拉回来", () => {
+    const 大跌 = { limit_up: 12, limit_down: 30, up: 400, down: 1800, flat: 100 };
+    const miss = scoreMarket({ ...大跌, ...全缺, promotionRate: null, ladderHighest: null });
+    assert.ok(miss.earning < 25, `广度 17% 的一天缺了数据也应是低分,实际 ${miss.earning}`);
+  });
+});
+
+describe("权重定义", () => {  it("五项原始权重之和为 1", () => {
     const sum = Object.values(MARKET_WEIGHTS).reduce((a, c) => a + c, 0);
     assert.equal(Math.round(sum * 100) / 100, 1);
   });

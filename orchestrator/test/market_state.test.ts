@@ -319,7 +319,42 @@ describe("deriveMarketSignal", () => {
     const signal = deriveMarketSignal({ limit_up: 80, limit_down: 1, up: 2000, down: 200, flat: 100 }, {}, {}, GATE_PASS);
     assert.equal(signal.phase, "极度高潮期");
     assert.ok(signal.composite! >= 65, `实际 ${signal.composite}`);
-    assert.equal(signal.position_cap_pct, 70, "分数够 100% 档是 75 分,这里落到 70% 档");
+    // 🔴 这个 fixture 的共振 / 资金流都是空对象 = 两条腿全缺。阶段判定不受完备性约束（分数没动），
+    //    但仓位上限必须压到 40% —— 改动前这里给 70%，正是「拿取数故障当利好」的现场样本。
+    assert.deepEqual(signal.incomplete_legs, ["板块共振", "板块资金流"]);
+    assert.equal(signal.position_cap_pct, 40, "缺腿日不许给 70%，与「闸门未评估」同一档");
+  });
+
+  it("同样的强势盘面但数据齐 → 仓位档不被误杀", () => {
+    const b = { limit_up: 80, limit_down: 1, up: 2000, down: 200, flat: 100 };
+    const signal = deriveMarketSignal(
+      b,
+      { rows: [{ resonance_rate: 0.6 }] },
+      { rows: [{ net_yi: 1e9 }, { net_yi: -5e8 }] },
+      GATE_PASS,
+    );
+    assert.deepEqual(signal.incomplete_legs, []);
+    assert.ok(signal.position_cap_pct! > 40, `数据齐时不该被压到 40%，实得 ${signal.position_cap_pct}`);
+    assert.ok(!signal.notes.some((n) => n.includes("仓位上限因此压到")), "数据齐不许冒出压仓说明");
+  });
+
+  it("缺腿要在 notes 与 reason 里都说清，不许静默", () => {
+    const b = { limit_up: 80, limit_down: 1, up: 2000, down: 200, flat: 100 };
+    const signal = deriveMarketSignal(b, {}, {}, GATE_PASS);
+    assert.ok(signal.notes.some((n) => n.includes("仓位上限因此最多 40%")), "notes 要写出压仓天花板");
+    const view = buildMarketStateView(signal, b, {}, GATE_PASS);
+    assert.ok(view.recommendation.reason.includes("仓位上限压到 40%"), "完备性真的压下来时 reason 要写明");
+    assert.ok(view.recommendation.reason.includes("板块共振"), "reason 要写出缺的是哪条腿");
+  });
+
+  it("闸门已把上限压得更低时：不许再说「压到 40%」跟「归零」打架", () => {
+    const b = { limit_up: 5, limit_down: 80, up: 200, down: 4000, flat: 100 };
+    const signal = deriveMarketSignal(b, {}, {}, GATE_PASS);
+    assert.ok(signal.incomplete_legs!.length > 0, "这个 fixture 也是缺腿的");
+    assert.ok(signal.position_cap_pct! < 40, `实际上限 ${signal.position_cap_pct} 应已被闸门/分数压得更低`);
+    const view = buildMarketStateView(signal, b, {}, GATE_PASS);
+    assert.ok(!view.recommendation.reason.includes("仓位上限压到 40%"), "完备性没起作用就别写它压了仓");
+    assert.ok(signal.notes.some((n) => n.includes("实际")), "notes 仍要如实给出实际值");
   });
 
   it("同样的涨停与广度，但量能/均线没数据 → 只给修复期、最多 40%", () => {
@@ -432,7 +467,7 @@ describe("buildMarketStateView", () => {
   it("composite >= 75 且三闸门全过时应推荐顺势而为", () => {
     const b = { limit_up: 85, limit_down: 0, up: 2000, down: 0, flat: 100 };
     // 满档要「三门都确定通过」；只有广度数据时上限会被压到 40%（见 positionCapOf 的 unknownCap）。
-    // 顺带把共振 / 资金流给全 —— 满分档本来就该是「全面普涨」，缺这两块赚不了 75 分。
+    // 顺带把共振 / 资金流给全 —— 缺这两块现在是按中性补位（不再按 0），分数会低一些但不会被误当 0
     const sig = deriveMarketSignal(
       b,
       { rows: [{ resonance_rate: 90 }], resonance_share: 0.9 } as never,
@@ -443,6 +478,20 @@ describe("buildMarketStateView", () => {
     const view = buildMarketStateView(sig, b, {}, GATE_PASS);
     assert.equal(view.recommendation.action, "顺势而为");
     assert.equal(view.recommendation.position_range, "100%");
+  });
+
+  it("赚钱效应的腿没取到时:note 要说清「按中性补位」,并且分数不打成 0", () => {
+    const b = { limit_up: 80, limit_down: 1, up: 2000, down: 200, flat: 100 };
+    const miss = deriveMarketSignal(b, {}, {}, GATE_PASS);
+    const full = deriveMarketSignal(b, { rows: [{ resonance_rate: 60 }], resonance_share: 0.6 } as never, { rows: [{ net_yi: 10 }] }, GATE_PASS);
+    assert.ok(miss.earning_score! > 0);
+    assert.ok(miss.earning_score! < full.earning_score!, "缺腿不许比数据齐全时更高（取数故障当利好）");
+    assert.ok(miss.notes.some((n) => n.includes("板块共振") && n.includes("中性补位")), `实得 ${JSON.stringify(miss.notes)}`);
+    assert.ok(miss.notes.some((n) => n.includes("板块资金流")), "两条腿都缺时要都写出来");
+
+    // 只有一条腿缺时，只提那一条
+    const onlyRes = deriveMarketSignal(b, {}, { rows: [{ net_yi: 10 }] }, GATE_PASS);
+    assert.ok(onlyRes.notes.some((n) => n.includes("板块共振") && !n.includes("板块资金流")));
   });
 
   it("仓位上限 0% 时动作必须是「空仓等待」,与阶段标签无关", () => {

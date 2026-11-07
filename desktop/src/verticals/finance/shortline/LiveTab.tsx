@@ -122,7 +122,7 @@ function AlertFeed({ v, threshold, scope, onThreshold, onScope }: { v: WatchView
         <p role="status" className="text-[13px] text-muted-foreground">
           {v.alerts.length ? `按当前筛选没有异动(今天共记下 ${v.alerts.length} 条)。`
             : v.detecting ? "还没有异动。急拉、急跌、封板、开板会实时出现在这里。"
-            : `${v.phase_label},不判断异动${v.trading_day === false ? "" : ";连续竞价时段(9:30–11:30、13:00–14:57)页面开着就会盯"}。`}
+            : `${v.phase_label},不判断异动${v.trading_day === false ? "" : ";连续竞价时段(9:30–11:30、13:00–14:57)后台会自动盯着采,页面关着也照采"}。`}
         </p>
       ) : (
         <ul aria-label="异动列表" className="max-h-72 space-y-1.5 overflow-y-auto pr-1">

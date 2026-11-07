@@ -21,6 +21,7 @@
  */
 
 import { fetchEndpoint, type ServiceContext } from "../../service.ts";
+import { consistencyFor, wantsFresh } from "../snapshot_ttl.ts";
 
 // ─── 类型定义 ───────────────────────────────────────────────────────────────────
 
@@ -234,7 +235,7 @@ function classifyPattern(
 
 export async function shortlineOpportunitiesAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   abortSignal: AbortSignal,
 ): Promise<ShortlineOpportunityResult> {
   const { clockOf } = await import("./intraday.ts");
@@ -242,13 +243,18 @@ export async function shortlineOpportunitiesAct(
   const day = clockOf(now).day;
 
   const notes: string[] = [];
+  // 🔴 同上：参数原来叫 `_body`、「刷新」点了等于没点。这四个端点的 args 里带 `date`，
+  //    **「今天」那一份盘中一直在变**，键却不会变 —— 不给时效就会冻在当天第一次取数那一刻。
+  const force = wantsFresh(body?.refresh);
+  const q = (endpoint: string, args: Record<string, unknown>) =>
+    fetchEndpoint(ctx, { endpoint, args, session: "opportunities", signal: abortSignal, consistency: consistencyFor(endpoint, force) });
 
   // 并行取数
   const [ztEnv, sentimentEnv, ladderEnv, firstBoardEnv] = await Promise.allSettled([
-    fetchEndpoint(ctx, { endpoint: "em_zt_pool", args: { date: day }, session: "opportunities", signal: abortSignal }),
-    fetchEndpoint(ctx, { endpoint: "em_limit_up_sentiment", args: {}, session: "opportunities", signal: abortSignal }),
-    fetchEndpoint(ctx, { endpoint: "cn_shortline_ladder", args: { date: day }, session: "opportunities", signal: abortSignal }),
-    fetchEndpoint(ctx, { endpoint: "cn_shortline_firstboard", args: { date: day }, session: "opportunities", signal: abortSignal }),
+    q("em_zt_pool", { date: day }),
+    q("em_limit_up_sentiment", {}),
+    q("cn_shortline_ladder", { date: day }),
+    q("cn_shortline_firstboard", { date: day }),
   ]);
 
   // 解析数据

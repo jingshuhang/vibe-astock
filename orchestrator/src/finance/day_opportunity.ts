@@ -31,6 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fetchEndpoint, type FetchResult, type ServiceContext } from "../service.ts";
 import { clockOf } from "./shortline/intraday.ts";
+import { consistencyFor, wantsFresh } from "./snapshot_ttl.ts";
 import { packageHistory, marketBreadthOf, type PackageDay } from "./tdx_package.ts";
 
 // ─── 板块清单 ───────────────────────────────────────────────────────────────────
@@ -320,6 +321,7 @@ async function quotesOf(
   codes: string[],
   signal: AbortSignal,
   gaps: string[],
+  force = false,
 ): Promise<Map<string, QuoteLite>> {
   const out = new Map<string, QuoteLite>();
   if (!codes.length) return out;
@@ -334,6 +336,9 @@ async function quotesOf(
           endpoint: "tx_quotes_batch",
           args: { codes: chunk.map(quoteCodeOf) },
           signal,
+          // 🔴 行情的键只由「这批代码」决定、不含时间：不给上限就会冻在第一次取数那一刻，
+          //    板块宽度的涨跌家数与中位涨幅全是那天的（与机会链同一个坑，2026-11-06 一起修）。
+          consistency: consistencyFor("tx_quotes_batch", force),
           timeout_ms: 30_000,
         });
         const byCode = new Map<string, Record<string, unknown>>();
@@ -467,12 +472,15 @@ export function stateOf(upRate: number, median: number, quoted: number): { state
 
 export async function dayOpportunityAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<DayOpportunityResult> {
   const { day, hms } = clockOf(new Date());
   const gaps: string[] = [];
   const notes: string[] = [];
+  // 🔴 原来这个参数叫 `_body`、全程没读过 —— 页面「刷新」点了等于没点。
+  //    缓存又没有时效上限，两条加起来就是「这一屏永远读第一天那份」（2026-11-06）。
+  const force = wantsFresh(body?.refresh);
 
   // ① 成分清单：10 个行业并行（缓存 24h，成分一天不变）
   const memberMap = new Map<string, { name: string; codes: string[]; truncated: boolean }>();
@@ -483,6 +491,8 @@ export async function dayOpportunityAct(
         symbol: b.code,
         args: { provider: "csi" },
         signal,
+        // 成分一天一变（调仓才动）—— 注释一直写着「缓存 24h」，但从来没有任何代码兑现它
+        consistency: consistencyFor("index_constituents", force),
         timeout_ms: 60_000,
       });
       const env = envelopeOf(r);
@@ -509,14 +519,19 @@ export async function dayOpportunityAct(
   // ② 全部成分去重后一次性取行情；③ 同时回溯近 N 个交易日的全市场涨跌幅
   const allCodes = new Set<string>();
   for (const m of memberMap.values()) for (const c of m.codes) allCodes.add(c);
+  let histError = "";
   const histPromise = packageHistory(ctx, BREADTH_HISTORY_DAYS, signal, { concurrency: HISTORY_CONCURRENCY })
-    .catch(() => [] as PackageDay[]);
-  const quoteMap = await quotesOf(ctx, [...allCodes], signal, gaps);
+    .catch((e) => {
+      histError = e instanceof Error ? e.message : String(e);
+      return [] as PackageDay[];
+    });
+  const quoteMap = await quotesOf(ctx, [...allCodes], signal, gaps, force);
   const pkgs = await histPromise;
   if (!pkgs.length) {
     gaps.push(
       "宽度回溯没取到任何一个历史交易日的通达信盘后包 → 只能看今日单点，"
-      + "比不了「在扩张还是在收缩」（这已经是历史回溯，不是要攒；拿不到是包缺失或网络问题）",
+      + "比不了「在扩张还是在收缩」（这已经是历史回溯，不是要攒；拿不到是包缺失或网络问题）"
+      + (histError ? `；具体失败：${histError}` : ""),
     );
   } else if (pkgs.length < BREADTH_HISTORY_DAYS) {
     notes.push(`宽度只回溯到 ${pkgs.length}/${BREADTH_HISTORY_DAYS} 个交易日（节假日 / 包未发布会落空，不用前一交易日顶替）`);
@@ -647,6 +662,8 @@ export async function dayOpportunityAct(
       endpoint: "sina_board_flow",
       args: { board_type: "industry" },
       signal,
+      // 行业资金流只有当日、随盘变；不给上限同样会冻住，页面上的「净流入」就是那天的
+      consistency: consistencyFor("sina_board_flow", force),
       timeout_ms: 25_000,
     });
     const byKey = new Map<string, { name: string; chg: number | null; net: number | null; note: string | null }>();

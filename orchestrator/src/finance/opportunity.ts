@@ -89,6 +89,7 @@
  */
 import { fetchEndpoint, type FetchResult, type ServiceContext } from "../service.ts";
 import { clockOf } from "./shortline/intraday.ts";
+import { consistencyFor, wantsFresh } from "./snapshot_ttl.ts";
 import { marketStateAct } from "./market_state.ts";
 import type { MarketSignal } from "./market_state.ts";
 
@@ -1436,6 +1437,7 @@ async function fetchQuotes(
   ctx: ServiceContext,
   signal: AbortSignal,
   codes: string[],
+  force = false,
 ): Promise<Map<string, QuoteLite>> {
   const out = new Map<string, QuoteLite>();
   if (!codes.length) return out;
@@ -1448,6 +1450,9 @@ async function fetchQuotes(
         args: { codes: chunk.map(quoteCodeOf) },
         signal,
         timeout_ms: 25_000,
+        // 🔴 行情是这一屏里变得最快的东西：它的键只由「这批代码」决定，不含时间，
+        //    不给上限就会冻在第一次取数那一刻 —— 页面上的价、换手、「距涨停」全是那天的。
+        consistency: consistencyFor("tx_quotes_batch", force),
       });
       const byCode = new Map<string, Record<string, unknown>>();
       for (const e of evidenceOf(r)) {
@@ -1568,6 +1573,10 @@ async function sealHistory(
           args: { date },
           signal,
           timeout_ms: 45_000,
+          // 🔴 这一处**故意不进 `SNAPSHOT_MAX_AGE_MS`、也不认 `force`**：键里带了具体日期，
+          //    而过去某天的「昨日涨停明细」是**不可变**的 —— 加时效只会让一次刷新把 20 天
+          //    全部重取一遍（每天约 2 秒 × 20）。不可变的键，永久缓存才是对的。
+          //    已知代价：若某天清晨在数据尚未落定时取过一次并标 partial，那份会一直留在盘上。
         });
         const res = resultOf(r);
         if (!res || res.partial === true) { failed++; continue; }
@@ -1625,18 +1634,30 @@ const SOURCES = [
   "市场状态信号（market_state，决定仓位档位）",
 ];
 
+// 快照时效与「刷新=True 就真取」统一在 `snapshot_ttl.ts` 里 —— 板块宽度（day_opportunity）
+// 和这里共用同一张表，免得改了一处、漏了另一处（2026-11-06 的事故见那个文件的头注释）。
+
 export async function opportunityScanAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<OpportunityResult> {
   const { day, hms } = clockOf(new Date());
   const gaps: string[] = [];
   const notes: string[] = [];
+  // 🔴 这个参数原来是 `_body`，从头到尾没人读 —— 页面的「刷新」按钮点了等于没点，
+  //    永远读回同一份快照。缓存没有时效上限时，这就是「10-30 的题材一直挂到今天」的第二道门。
+  const force = wantsFresh(body?.refresh);
 
   const one = async (endpoint: string, label: string, args: Record<string, unknown> = {}, timeoutMs = 60_000) => {
     try {
-      const r = await fetchEndpoint(ctx, { endpoint, args, signal, timeout_ms: timeoutMs });
+      const r = await fetchEndpoint(ctx, {
+        endpoint,
+        args,
+        signal,
+        timeout_ms: timeoutMs,
+        consistency: consistencyFor(endpoint, force),
+      });
       const env = envelopeOf(r);
       if (env?.status === "failed") {
         const errs = (env.errors as { error?: string }[] | undefined) ?? [];
@@ -1667,7 +1688,7 @@ export async function opportunityScanAct(
     // 🔴 它的 `sector` 是申万三级、39 只散在 32 个行业 → 行业维度实测不可用，这里只取时点
     one("cn_shortline_settled", "昨日涨停明细", {}, 45_000),
     one("sina_board_flow", "板块资金流", {}, 30_000),
-    marketStateAct(ctx, {}, signal).catch((e) => {
+    marketStateAct(ctx, { refresh: force }, signal).catch((e) => {
       gaps.push(`市场状态取数失败：${e instanceof Error ? e.message : String(e)}`);
       return null;
     }),
@@ -1681,6 +1702,13 @@ export async function opportunityScanAct(
   const nodes = new Map(themeNodes(themesR).map((n) => [n.tag, n]));
   const topicByTag = new Map(rotationTopics(rotationR).map((t) => [t.tag, t]));
   const prevReliable = prevReliableOf(themesR);
+  // 🔴 「题材结构」永远是**最近一个收盘档**：涨停原因（同花顺涨停揭秘 / 东财涨停池）只有收盘后才有，
+  //    盘中根本不存在「当日题材」。所以这一屏天然是「今天此刻的涨停家数 + 昨天收盘的题材结构」两天的数，
+  //    不写清楚就会像 2026-11-06 那样，把 10-30 的题材当成今天的摆一整天。
+  const themesDate = String(resultOf(themesR)?.date ?? "") || null;
+  if (themesDate && themesDate !== day) {
+    notes.push(`题材结构与龙头封单/首末封取自 ${themesDate} 收盘档（涨停原因只有收盘后才有，盘中拿不到当日题材）—— 与今天此刻的涨停家数不是同一天的数`);
+  }
   if (!topicByTag.size) {
     notes.push(
       prevReliable
@@ -1755,7 +1783,7 @@ export async function opportunityScanAct(
   const needCodes = shown
     .filter((s) => s.has_sector_effect)
     .flatMap((s) => s.leaders.filter((l) => l.role === "龙头" || l.role === "跟风").map((l) => l.code));
-  const quotes = await fetchQuotes(ctx, signal, [...new Set(needCodes)].slice(0, 30));
+  const quotes = await fetchQuotes(ctx, signal, [...new Set(needCodes)].slice(0, 30), force);
   if (needCodes.length && quotes.size === 0) gaps.push("龙头个股行情没补上：价位与「距涨停」为空，其余判断不受影响");
   for (const s of shown) {
     for (const l of s.leaders) l.quote = quotes.get(l.code) ?? null;

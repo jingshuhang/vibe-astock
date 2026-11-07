@@ -21,6 +21,8 @@ test('v2.1.4 source version is consistent across packages, locks, README badges 
     assert.deepEqual(badges, [VERSION], `${file} 首屏源码版本徽标必须恰好一个且等于 ${VERSION}`);
   }
   const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-  const firstRelease = /^## \[([^\]]+)\]/m.exec(changelog)?.[1];
-  assert.equal(firstRelease, VERSION, 'CHANGELOG 最上面的版本条目必须是当前版本');
+  // 最上面的**版本条目**必须是当前版本。允许它前面有 `[未发布]` 这类小节(Keep a Changelog 的标准写法):
+  // 那一条不主张任何版本号,拿它当"版本不一致"会把「改完了但还没发版」判成错误。
+  const versions = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]!).filter((v) => /^\d+\.\d+\.\d+$/.test(v));
+  assert.equal(versions[0], VERSION, 'CHANGELOG 最上面的版本条目必须是当前版本');
 });

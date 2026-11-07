@@ -10,6 +10,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ignitionOf, rankLeaders, planDraftOf, sealGradeOf, SEAL_GRADE_CUT } from "../src/finance/opportunity.ts";
+import { SNAPSHOT_MAX_AGE_MS, SNAPSHOT_FALLBACK_MAX_AGE_MS, consistencyFor, wantsFresh } from "../src/finance/snapshot_ttl.ts";
+import { DEFAULT_CONSISTENCY, DEFAULT_PREFER_CACHE_MAX_AGE_MS, snapshotUsable } from "../src/snapshot.ts";
 import type { RotationTopic, ThemeNode, SectorIgnition, LeaderPick, OpportunityResult, MarketFacts, TierOutcome, SealTiming, SealBucket, SealTrend } from "../src/finance/opportunity.ts";
 
 const topic = (p: Partial<RotationTopic> & { tag: string }): RotationTopic => ({
@@ -575,5 +577,106 @@ describe("sealGradeOf 封单厚度分档", () => {
 
   it("null 返回 null，不能当成「软」", () => {
     assert.equal(sealGradeOf(null), null, "没取到封单 != 封得软，这两个不能混");
+  });
+});
+
+/**
+ * 快照时效：**不许再出现「一次写入、永久命中」。**
+ *
+ * 2026-11-06 的事故：`DEFAULT_CONSISTENCY` 是 `{mode:"prefer_cache"}`，不带 `max_age_ms`；
+ * `snapshotUsable` 在「一个上限都没有」时直接 `return true`。而快照键只由「端点+参数」决定、
+ * 不含日期 —— 于是 `cn_shortline_themes{top:12}` 自 **10-30** 起再没换过，页面上
+ * 「三季报增长 15 只 / 最高 5 板 / 龙头青岛食品封单 0.57 亿」摆了整整 7 天，
+ * 而同屏的「涨停 26 / 炸板 11」是当天实时。`?refresh=1` 当时也被丢掉，按刷新也救不回来。
+ */
+describe("机会链与板块宽度的快照时效", () => {
+  /** 两个视图实际会打的端点，漏写一条就等于给它开了一张「永不过期」的通行证 */
+  const USED = [
+    // 机会发现（opportunity_scan）
+    "cn_shortline_themes",
+    "cn_shortline_theme_rotation",
+    "cn_shortline_board_ladder",
+    "cn_shortline_cycle",
+    "cn_shortline_facts",
+    "cn_shortline_settled",
+    "cn_shortline_live",
+    "sina_board_flow",
+    // 板块宽度（day_opportunity）
+    "tx_quotes_batch",
+    "index_constituents",
+  ];
+
+  it("机会链用到的每个端点都要有显式上限", () => {
+    for (const id of USED) {
+      const v = SNAPSHOT_MAX_AGE_MS[id];
+      assert.equal(typeof v, "number", `${id} 没在 SNAPSHOT_MAX_AGE_MS 里 —— 会退化成永久命中`);
+      assert.ok(Number.isFinite(v) && v > 0, `${id} 的上限必须是有穷正数，不许写 Infinity 图省事`);
+    }
+  });
+
+  it("上限不许超过 12 小时：再长就等于「跨交易日也不换」", () => {
+    const TWELVE_HOURS = 12 * 3600_000;
+    for (const [id, v] of Object.entries(SNAPSHOT_MAX_AGE_MS) as [string, number][]) {
+      assert.ok(v <= TWELVE_HOURS, `${id} 给了 ${v}ms，超过 12 小时就意味着隔夜不重取`);
+    }
+  });
+
+  it("7 天前的快照在每个上限下都必须判过期（这是 10-30 那次的最小复现）", () => {
+    const old = {
+      schema: 1, key: "k", endpoint: "x", symbol: "",
+      fetched_at: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+      payload: {},
+    };
+    for (const id of USED) {
+      const c = { mode: "prefer_cache" as const, max_age_ms: SNAPSHOT_MAX_AGE_MS[id] };
+      assert.equal(snapshotUsable(old, c), false, `${id}：7 天前的快照还被判成「可用」`);
+    }
+    // 兜底档同理：表里没写的端点也不许把旧件当新件
+    assert.equal(snapshotUsable(old, { mode: "prefer_cache", max_age_ms: SNAPSHOT_FALLBACK_MAX_AGE_MS }), false);
+  });
+
+  it("刚取到的快照仍然要命中缓存 —— 修的只是「永不重取」，不是把缓存关掉", () => {
+    const fresh = {
+      schema: 1, key: "k", endpoint: "x", symbol: "",
+      fetched_at: new Date().toISOString(), payload: {},
+    };
+    for (const id of USED) {
+      const c = { mode: "prefer_cache" as const, max_age_ms: SNAPSHOT_MAX_AGE_MS[id] };
+      assert.equal(snapshotUsable(fresh, c), true, `${id}：刚取回来的快照不该再打一次上游`);
+    }
+  });
+});
+
+/**
+ * `?refresh=1` 必须真取，未知端点不许「没有上限」。
+ * 这两条是同一个事故的两半：视图动作的 body 参数曾写作 `_body`、从没被读过（刷新无效），
+ * 而端点没有时效上限（缓存永不失效），两条加起来就是「点刷新也只换回同一份」。
+ */
+describe("consistencyFor / wantsFresh", () => {
+  it("表单里的 refresh 认四种写法，其余一律当没点", () => {
+    for (const v of ["1", 1, true, "true"]) assert.equal(wantsFresh(v), true, `${String(v)} 应认`);
+    for (const v of ["0", 0, false, "", undefined, null, "yes"]) assert.equal(wantsFresh(v), false, `${String(v)} 不该认`);
+  });
+
+  it("点了刷新 → fresh，不看时效", () => {
+    assert.deepEqual(consistencyFor("cn_shortline_themes", true), { mode: "fresh" });
+    assert.deepEqual(consistencyFor("某个没人登记过的端点", true), { mode: "fresh" });
+  });
+
+  it("没点刷新 → prefer_cache + 有穷上限，未知端点走兜底而不是「不限」", () => {
+    const listed = consistencyFor("cn_shortline_live");
+    assert.equal(listed.mode, "prefer_cache");
+    assert.equal((listed as { max_age_ms?: number }).max_age_ms, SNAPSHOT_MAX_AGE_MS.cn_shortline_live);
+
+    const unknown = consistencyFor("某个没人登记过的端点");
+    assert.equal(unknown.mode, "prefer_cache");
+    assert.equal((unknown as { max_age_ms?: number }).max_age_ms, SNAPSHOT_FALLBACK_MAX_AGE_MS,
+      "未知端点必须落到兜底上限 —— 缺省成「无上限」就是下一次 10-30");
+  });
+
+  it("Core 缺省也不许是「不限」，且与 finance 兜底同源", () => {
+    assert.equal(DEFAULT_CONSISTENCY.mode, "prefer_cache");
+    assert.equal((DEFAULT_CONSISTENCY as { max_age_ms?: number }).max_age_ms, DEFAULT_PREFER_CACHE_MAX_AGE_MS);
+    assert.equal(SNAPSHOT_FALLBACK_MAX_AGE_MS, DEFAULT_PREFER_CACHE_MAX_AGE_MS, "两套兜底不许再分叉");
   });
 });

@@ -20,6 +20,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { NOFOLLOW_FLAG, atomicWrite, readJsonIfExists, writeJson } from "./fsutil.ts";
+import { PYTHON_UTF8_ENV } from "./config.ts";
 import { readTurnContext } from "./turn_context.ts";
 import { currentPlugin } from "./plugin.ts";
 import { calcRecordSchema, validateStageOutput } from "./schemas.ts";
@@ -148,7 +149,7 @@ export function runCalculation(ctx: RunToolsContext, input: {
     let available = "(清单获取失败)";
     try {
       const probe = spawnSync(ctx.python, [path.join(ctx.repoRoot, "calc", "cli.py"), "list"],
-        { cwd: ctx.runDir, encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+        { cwd: ctx.runDir, encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, env: { ...process.env, ...PYTHON_UTF8_ENV } });
       const fns = (JSON.parse(probe.stdout || "{}") as { functions?: Record<string, string> }).functions;
       if (fns) available = Object.keys(fns).join(", ");
     } catch { /* 拿不到就如实说拿不到,不编 */ }
@@ -173,7 +174,7 @@ export function runCalculation(ctx: RunToolsContext, input: {
   if (input.calculation_ids?.length) argv.push("--calc", ...input.calculation_ids);
   let proc;
   try {
-    proc = spawnSync(ctx.python, argv, { cwd: ctx.runDir, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    proc = spawnSync(ctx.python, argv, { cwd: ctx.runDir, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true, env: { ...process.env, ...PYTHON_UTF8_ENV } });
   } finally {
     try { fs.unlinkSync(argsFile); } catch { /* best effort */ }
   }

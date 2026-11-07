@@ -576,6 +576,12 @@ export function DailyReview() {
             extra={B && <span className="text-[11px] text-muted-foreground">上涨 {B.up ?? "—"} · 平盘 {B.flat ?? "—"} · 下跌 {B.down ?? "—"} · 涨 5% 以上 {B.up5 ?? "—"} · 跌 5% 以上 {B.down5 ?? "—"}</span>} />
           {!distOption ? <Pending page={pageMeta} id="breadth" done={ovDone} /> : <>
             <EChart option={distOption} height={220} />
+            {B!.exchangesMissing && (
+              <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] leading-4">
+                沪深京三所的家数与成交额这次没取到（东财指数行情那一路断了）。上面的涨/跌/平与分档图来自 23 档涨跌分布，不受影响；
+                三所口径与分布口径本来就不一样，<b>不拿分布合起来顶替</b>，所以下面这行留空。
+              </p>
+            )}
             <div className="mt-2 overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="border-b border-border/50 text-left text-muted-foreground">{["", "上涨", "下跌", "平盘", "成交额"].map((h) => <th key={h} className="px-2 py-1.5 font-medium">{h}</th>)}</tr></thead>

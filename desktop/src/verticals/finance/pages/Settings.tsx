@@ -6,7 +6,7 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { backend, friendlyAgentError, type LocalAgentStatus, type ProductInfo } from "@/lib/backend";
 import { API_MODELS, PROVIDER_BASE, SUBSCRIPTION_MODELS, apiPresetForSaved, isCliProvider, modelNameForPreset, providerOfModel, type ProviderId } from "@/lib/ai-models";
-import { clearLlm, loadUserLlm, saveLlm } from "@/lib/llm";
+import { clearLlmEverywhere, loadUserLlm, saveLlmEverywhere } from "@/lib/llm";
 import { LLM_KEY } from "@/lib/llmStore";
 import { testAndSaveAi } from "@/lib/aiConnection";
 import { useAiRuntime } from "@/hooks/useAiRuntime";
@@ -168,12 +168,17 @@ export function Settings() {
     return run;
   }, []);
 
+  /** 重读后端那份有效配置。保存 / 清除之后必须重读 —— 否则「定时任务用哪一份」还停在旧值，
+   *  而这一行正是让人发现"页面选的和任务跑的不是一家"的唯一地方。 */
+  const refreshInfo = useCallback(async () => {
+    try { setInfo(await backend.product()); }
+    catch (e: unknown) { setErr(e instanceof Error ? e.message : String(e)); }
+  }, []);
+
   useEffect(() => {
-    backend.product()
-      .then(setInfo)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+    void refreshInfo();
     void refreshAgents();
-  }, [refreshAgents]);
+  }, [refreshInfo, refreshAgents]);
 
   const agentOf = (provider: ProviderId) => agents.find((x) => x.provider === provider);
 
@@ -225,8 +230,9 @@ export function Settings() {
     if (!cfg) return;
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm });
+      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlmEverywhere });
       setConfigured(true); say("连接成功。AI 会按问题需要联网搜索、取数和计算。");
+      await refreshInfo();
     } catch (e) {
       oops(friendlyAgentError(e));
     } finally { setTesting(false); }
@@ -239,8 +245,9 @@ export function Settings() {
     const cfg = { provider: m.provider, baseURL: "", apiKey: "", model: m.id };
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm });
+      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlmEverywhere });
       setConfigured(true); say(`「${m.name}」连接成功。AI 会按问题需要联网搜索、取数和计算。`);
+      await refreshInfo();
     } catch (e) { oops(friendlyAgentError(e)); }
     finally { setTesting(false); }
   };
@@ -251,11 +258,12 @@ export function Settings() {
     try { await refreshAgents(); } finally { setRechecking(false); }
   };
 
-  const forget = () => {
+  const forget = async () => {
     // 🔴 清不掉要说出来：吞掉异常的话界面写"已清除"、旧 key 还在，下一次提问照样发出去
     try {
-      clearLlm();
+      await clearLlmEverywhere();
       setApiKey(""); setConfigured(false); say("已清除。再次使用 AI 功能前需要重新连接。");
+      await refreshInfo();
     } catch (e) { oops(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -270,10 +278,14 @@ export function Settings() {
         : "用户还没连接 AI。") +
       (info
         ? (info.provider.profile
-          ? `后台默认 AI 来源：${info.provider.label ?? info.provider.profile}（${info.provider.kind === "local_agent" ? "本机订阅 Agent" : "模型 API"}）` +
-            (info.provider.kind === "api" ? `｜密钥变量 ${info.provider.env_key ?? "—"} ${info.provider.key_present ? "已设置" : "未设置"}` : "")
-          : "后台没有配置默认 AI 来源") +
-          `｜默认模型 ${String(info.defaults.model ?? "—")}｜产品版本 ${info.version}`
+          ? `定时任务实际用的 AI 来源：${info.provider.label ?? info.provider.profile}（${info.provider.kind === "local_agent" ? "本机订阅 Agent" : "模型 API"}，来自${info.provider_source === "page" ? "页面保存的那份" : "后台配置文件"}）` +
+            (info.provider.kind === "api"
+              ? (info.provider_source === "page"
+                ? `｜模型 ${info.provider.model ?? "—"}`
+                : `｜密钥变量 ${info.provider.env_key ?? "—"} ${info.provider.key_present ? "已设置" : "未设置"}`)
+              : "")
+          : "后台没有可用的 AI 来源（定时任务跑不了）") +
+          `｜产品版本 ${info.version}`
         : "还没读到后端配置。"),
     suggestions: ["Agent 运行时和模型有什么区别", "我现在用的是哪个模型", "我的 key 会被发到哪里"],
   });
@@ -336,11 +348,38 @@ export function Settings() {
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-success/25 bg-success/5 p-3 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
         <span>
-          API key <b className="text-foreground">只保存在这台机器的浏览器里</b>，提问时经<b className="text-foreground">本机</b>后端转给你选定的模型服务商，
-          用完即弃 —— 不进入本产品的配置文件、日志、台账或仓库。
+          API key 只存在<b className="text-foreground">这台机器</b>：浏览器本地配置一份，数据根下的
+          <span className="font-mono"> llm.json </span>再一份（权限只开给本机当前用户）—— 后者是给收盘后的
+          <b className="text-foreground">定时任务</b>用的，它们没有浏览器。提问时经<b className="text-foreground">本机</b>后端转给你选定的模型服务商；
+          两份都<b className="text-foreground">不进入</b>仓库、日志、台账或研究产物，点「清除」时一起删掉。
           <span className="mt-2 block">AI 联网时，搜索词会发送给搜索服务；网页读取可能经 Jina Reader 转发网址及查询参数。请勿提交含私密令牌或签名凭据的链接。</span>
         </span>
       </div>
+
+      {/* 定时任务用哪一份 —— 这一行是唯一能让人发现"页面选的和任务跑的不是一家"的地方 */}
+      {info && (
+        <div className="mb-4 rounded-lg border border-border/60 bg-card/20 p-3 text-xs leading-5 text-muted-foreground">
+          {info.provider_source === "page" && info.provider.profile ? (
+            <>收盘后的定时任务（18:55 复盘 · 19:02 情绪复盘 · 周五 19:10 周报）用
+              <b className="text-foreground"> 你在这里保存的这份</b>：
+              {info.provider.label ?? info.provider.profile}
+              {info.provider.model ? <> · <span className="font-mono">{info.provider.model}</span></> : null}
+              {info.saved_llm?.saved_at ? <>（{info.saved_llm.saved_at} 存到本机）</> : null}。
+            </>
+          ) : info.provider_source === "config" && info.provider.profile ? (
+            <>收盘后的定时任务用的是<b className="text-foreground">后台配置文件</b>里的来源：
+              {info.provider.label ?? info.provider.profile}
+              {info.provider.model ? <> · <span className="font-mono">{info.provider.model}</span></> : null}。
+              你在上面「测试并保存」之后，它会改成用你保存的这份。
+            </>
+          ) : (
+            <>收盘后的定时任务还没有可用的 AI 来源 —— 在上面连接一次即可，连接成功就会同步给它们。</>
+          )}
+          {info.saved_llm?.problem
+            ? <span className="mt-1 block text-destructive">后台那份读不懂：{info.saved_llm.problem}（定时任务会停下来报错，不会偷换成别家）</span>
+            : null}
+        </div>
+      )}
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2">
         <button type="button" onClick={() => setMode("subscription")} aria-pressed={mode === "subscription"}
@@ -499,7 +538,9 @@ export function Settings() {
                 placeholder="sk-…" className={`${INPUT} font-mono text-xs`} />
               <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
                 为避免每次重填，key 会保存在当前浏览器的本机配置中；它不是系统钥匙串，也不承诺加密。
-                只建议在可信的个人电脑使用，共享电脑用完请点击“忘记配置”。key 不进入仓库、后端配置、日志或研究产物。
+                保存成功还会在数据根写一份 <span className="font-mono">llm.json</span>（权限只开给本机当前用户），
+                专给收盘后的定时任务用 —— 点「清除」时一起删掉。
+                只建议在可信的个人电脑使用，共享电脑用完请点击“忘记配置”。key 不进入仓库、日志、台账或研究产物。
               </p>
             </div>
             <ActionRow onSave={testAndSaveApi} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
@@ -551,7 +592,7 @@ export function Settings() {
           <GlassCard>
             <div className="mb-3 flex items-center gap-2">
               <Terminal className="h-4 w-4 text-primary" />
-              <h3 className="font-semibold">后台默认 AI 来源</h3>
+              <h3 className="font-semibold">定时任务用的 AI 来源</h3>
               {info.provider.kind === "api" && (
                 <span
                   className={`ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
@@ -564,27 +605,43 @@ export function Settings() {
               )}
             </div>
             <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
-              页面始终用你在上面选的来源；后台默认只给命令行研究和直接调用本机接口的 Agent 用。
+              页面对话始终用你在上面选的来源；这里说的是<b className="text-foreground">收盘后自动跑的三个任务</b>
+              （日复盘 / 情绪复盘 / AI 周报）以及命令行研究、直接调用本机接口的 Agent 实际会用哪一个。
+              页面保存过就用你保存的那份，否则用 <span className="font-mono">config.json</span> 里的。
             </p>
             {info.provider.profile ? (
               <>
                 <Row k="来源" v={info.provider.label ?? info.provider.profile} />
                 <Row k="模板" v={info.provider.profile} mono />
                 <Row k="类型" v={info.provider.kind === "local_agent" ? "本机订阅 Agent（用它自己的登录）" : "模型 API（Chat Completions）"} />
+                <Row k="取自" v={info.provider_source === "page" ? "页面「接入 AI」保存的那份" : "后台 config.json"} />
                 {info.provider.kind === "api" && (
                   <>
                     <Row k="端点" v={info.provider.base_url ?? "—"} mono />
                     <Row k="实测" v={VERIFICATION_TEXT[info.provider.verification ?? ""] ?? "—"} />
-                    <Row
-                      k="密钥来自"
-                      v={
-                        <span className="inline-flex items-center gap-1.5">
-                          {/* 🔴 只说"设没设",不说"是什么" */}
-                          <span className="font-mono text-xs">${info.provider.env_key ?? "—"}</span>
-                          <span className="text-muted-foreground">{info.provider.key_present ? "· 已设置" : "· 未设置"}</span>
-                        </span>
-                      }
-                    />
+                    {info.provider_source === "page" ? (
+                      <Row
+                        k="密钥来自"
+                        v={
+                          <span className="inline-flex items-center gap-1.5">
+                            {/* 🔴 只说"哪来的",不说"是什么" */}
+                            <span className="font-mono text-xs">{info.saved_llm?.file ?? "llm.json"}</span>
+                            <span className="text-muted-foreground">{info.provider.key_present ? "· 已保存" : "· 缺 key"}</span>
+                          </span>
+                        }
+                      />
+                    ) : (
+                      <Row
+                        k="密钥来自"
+                        v={
+                          <span className="inline-flex items-center gap-1.5">
+                            {/* 🔴 只说"设没设",不说"是什么" */}
+                            <span className="font-mono text-xs">${info.provider.env_key ?? "—"}</span>
+                            <span className="text-muted-foreground">{info.provider.key_present ? "· 已设置" : "· 未设置"}</span>
+                          </span>
+                        }
+                      />
+                    )}
                   </>
                 )}
                 <Row k="默认模型" v={String(info.defaults.model ?? "(未指定)")} />

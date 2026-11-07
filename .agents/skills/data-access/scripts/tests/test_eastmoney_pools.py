@@ -12,6 +12,7 @@ import pytest
 from test_registry_sources import _ctx
 from sources import eastmoney as em
 from sources import mappers as MP
+from sources import sina
 
 TZ_SH = em.TZ_SH
 
@@ -72,6 +73,52 @@ def test_legacy_pool_endpoints_never_write_zero_limit_ups():
         assert r["status"] == "failed" and not r["evidence"], ep
     r = MP.em_zt_pools([], _ctx(symbol="MARKET", market="CN", source="eastmoney", ep={"id": "em_dt_pool"}, args={"date": "20261009"}))
     assert r["status"] == "partial" and r["evidence"][0]["value"] == 0
+    assert r["extra"]["no_cache"] is True and r["extra"]["placeholder_zero"] is True
+    assert r["missing"], "占位 0 要同时写明这个字段没取到"
     r = MP.em_limit_up_sentiment({"date": "20260801", "zt_count": 0, "zb_count": 3, "dt_count": 0},
                                  _ctx(symbol="MARKET", market="CN", source="eastmoney", ep={"id": "em_limit_up_sentiment"}))
     assert r["status"] == "failed" and not r["evidence"]
+
+
+def test_no_data_partials_are_marked_no_cache():
+    """partial + 占位 0 有证据,但必须带机器可读的「不许缓存」标记。"""
+    cases = [
+        MP.em_daily_dragon_tiger({}, _ctx(symbol="MARKET", market="CN", source="eastmoney", ep={"id": "em_daily_dragon_tiger"})),
+        MP.em_zt_pools([], _ctx(symbol="MARKET", market="CN", source="eastmoney", ep={"id": "em_dt_pool"}, args={"date": "20261106"})),
+        MP.em_hot_concept([], _ctx(symbol="MARKET", market="CN", source="eastmoney", ep={"id": "em_hot_concept"})),
+        MP.ths_hot_reason([], _ctx(symbol="MARKET", market="CN", source="ths", ep={"id": "ths_hot_reason"}, args={"date": "2026-11-06"})),
+        MP.ths_hsgt_realtime({}, _ctx(symbol="MARKET", market="CN", source="ths", ep={"id": "ths_hsgt_realtime"})),
+        MP.ths_limit_up_pool([], _ctx(symbol="MARKET", market="CN", source="ths", ep={"id": "ths_limit_up_pool"}, args={"date": "20261106"})),
+    ]
+    for r in cases:
+        assert r["status"] == "partial"
+        assert r["extra"]["no_cache"] is True
+        assert r["extra"]["placeholder_zero"] is True
+        assert r["missing"], "缺口要落到 missing,不能只藏在 degraded 的人话里"
+
+
+def test_market_breadth_sina_fallback_keeps_real_source(monkeypatch):
+    """东财分布断了用新浪备源:桶与证据都必须署名 sina,不能回退成 eastmoney。"""
+    def boom(*_a, **_k):
+        raise RuntimeError("push2ex 断了")
+
+    monkeypatch.setattr(em, "em_json", boom)
+    monkeypatch.setattr(em, "_push2_json", lambda *_a, **_k: {"data": {"diff": [
+        {"f12": "000001", "f104": 100, "f105": 50, "f106": 10, "f6": 1234},
+        {"f12": "399106", "f104": 200, "f105": 60, "f106": 20, "f6": 2345},
+        {"f12": "899050", "f104": 30, "f105": 10, "f106": 5, "f6": 345},
+    ]}})
+    monkeypatch.setattr(em, "last_raw_ref", lambda: None)
+    monkeypatch.setattr(sina, "sina_updown_distribution", lambda: {
+        "date": "2026-11-06", "buckets": [{"key": 11, "label": "涨停", "count": 3}], "source": "sina"})
+
+    raw = em.market_breadth()
+    assert raw["buckets"][0]["source"] == "sina"
+    assert "source=sina" in raw["notes"][-1]
+
+    m = MP.em_market_breadth_map(raw, _ctx(symbol="MARKET", market="CN", source="eastmoney",
+                                           ep={"id": "em_market_breadth"}))
+    dist = [e for e in m["evidence"] if e["field"] == "market_dist_count"]
+    assert dist and all(e["source"] == "sina" for e in dist)
+    assert m["extra"]["distribution_sources"] == ["sina"]
+    assert all(miss["field"] != "market_up_count" for miss in m["missing"] if "分布" in miss["reason"])

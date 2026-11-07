@@ -303,7 +303,10 @@ test("doctor:假 exec + 假 Agent 探测 → 全绿;没有可用大脑 → warn;
   await doctor({ ...keyEnv, VRA_TEST_DOCTOR_KEY: secret, OPENAI_API_KEY: "y".repeat(24) }, { exec: spy });
   assert.ok(seen.length >= 2, "Python 与 calc 自检都应该跑过");
   assert.ok(seen.every((e) => !e || !Object.keys(e).some((k) => /KEY|TOKEN|SECRET/i.test(k))), "子进程环境里出现了密钥类变量");
-  assert.deepEqual(Object.keys(minimalEnv({ PATH: "/usr/bin", OPENAI_API_KEY: "x", VRA_TEST_DOCTOR_KEY: "y", HTTPS_PROXY: "http://p" })).sort(), ["HTTPS_PROXY", "PATH"]);
+  // 白名单里只有非密钥项;PYTHONUTF8 / PYTHONIOENCODING 是**编码**声明(不是凭据),固定带上:
+  // python 探针不声明输出编码时在 Windows 上按 cp936 写,Node 按 utf8 解 → 中文全成替换符
+  assert.deepEqual(Object.keys(minimalEnv({ PATH: "/usr/bin", OPENAI_API_KEY: "x", VRA_TEST_DOCTOR_KEY: "y", HTTPS_PROXY: "http://p" })).sort(),
+    ["HTTPS_PROXY", "PATH", "PYTHONIOENCODING", "PYTHONUTF8"]);
 });
 
 test("init 命令行:带了 --provider / --python 却没给值直接报错(任何写入之前),不当成没传", () => {

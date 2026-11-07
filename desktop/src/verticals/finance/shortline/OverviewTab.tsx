@@ -11,7 +11,7 @@ import { GapsAndSource } from "./ViewBits";
 import { useOverviewPoll } from "./useOverviewPoll";
 import { CompositeBadge, ScoreRing } from "../pages/MarketState";
 import { Opportunity } from "../pages/Opportunity";
-import type { MarketStateResult } from "@/lib/marketState";
+import { DIMENSION_LABELS, type MarketStateResult } from "@/lib/marketState";
 import type { BoardFlowRow, BreadthSummary, IndexRow, OverviewBlock, OverviewView, ResonanceRow, SectorRow, EventTrend } from "./watchTypes";
 
 function StatTile({ label, value, cls, sub }: { label: string; value: string; cls?: string; sub?: string }) {
@@ -162,12 +162,13 @@ function MarketStateOverviewPanel({ d }: { d: MarketStateResult }) {
     <div className="space-y-3">
       <CompositeBadge signal={signal} />
       <div className="grid grid-cols-5 gap-2">
-        <ScoreRing value={dimensions.emotion.score} color="#6366f1" label="情绪" weight={dimensions.emotion.weight} asOf={dimensions.emotion.as_of} stale={stale.has("emotion")} />
-        <ScoreRing value={dimensions.dragon.score} color="#f59e0b" label="龙头" weight={dimensions.dragon.weight} asOf={dimensions.dragon.as_of} stale={stale.has("dragon")} />
-        <ScoreRing value={dimensions.risk.score} color="#22c55e" label="风险" weight={dimensions.risk.weight} asOf={dimensions.risk.as_of} stale={stale.has("risk")} />
-        <ScoreRing value={dimensions.earning.score} color="#3b82f6" label="赚钱效应" weight={dimensions.earning.weight} asOf={dimensions.earning.as_of} stale={stale.has("earning")} />
-        <ScoreRing value={dimensions.event.score} color="#8b5cf6" label="事件" weight={dimensions.event.weight} asOf={dimensions.event.as_of} stale={dimensions.event.stale ?? stale.has("event")} />
+        <ScoreRing value={dimensions.emotion.score} color="#6366f1" label={DIMENSION_LABELS.emotion.label} hint={DIMENSION_LABELS.emotion.hint} weight={dimensions.emotion.weight} asOf={dimensions.emotion.as_of} stale={stale.has("emotion")} />
+        <ScoreRing value={dimensions.dragon.score} color="#f59e0b" label={DIMENSION_LABELS.dragon.label} hint={DIMENSION_LABELS.dragon.hint} weight={dimensions.dragon.weight} asOf={dimensions.dragon.as_of} stale={stale.has("dragon")} />
+        <ScoreRing value={dimensions.risk.score} color="#22c55e" label={DIMENSION_LABELS.risk.label} hint={DIMENSION_LABELS.risk.hint} weight={dimensions.risk.weight} asOf={dimensions.risk.as_of} stale={stale.has("risk")} />
+        <ScoreRing value={dimensions.earning.score} color="#3b82f6" label={DIMENSION_LABELS.earning.label} hint={DIMENSION_LABELS.earning.hint} weight={dimensions.earning.weight} asOf={dimensions.earning.as_of} stale={stale.has("earning")} />
+        <ScoreRing value={dimensions.event.score} color="#8b5cf6" label={DIMENSION_LABELS.event.label} hint={DIMENSION_LABELS.event.hint} weight={dimensions.event.weight} asOf={dimensions.event.as_of} stale={dimensions.event.stale ?? stale.has("event")} />
       </div>
+      <p className="text-[11px] text-muted-foreground">五维都是 0–100 分，分越高越正面；「抗跌度」原名「风险」，量的是安全度，分低才是危险。</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         <span>建议:<b className="text-foreground">{recommendation.action}</b></span>
         <span>仓位上限:{recommendation.position_range}</span>
@@ -313,7 +314,7 @@ export function OverviewPanel({ v, error, paused = false }: { v: OverviewView; e
         {error && <span role="alert" className="text-warning">这次没取到:{error}。先显示上一次的内容,稍后自动重试</span>}
       </div>
 
-      <BlockSection icon={BrainCircuit} title="市场状态信号(本机测算)" hint="五维加权健康分:情绪 / 龙头 / 风险 / 赚钱效应 / 事件。事件面只取央视《新闻联播》标题做宏观词典扫描(不接大模型、权重封顶 8%);涨跌分布没取到时明确说「算不出来」,不给分数、不设仓位上限;东财断连时由新浪备源接住。" kind="marketState" block={v.marketState} />
+      <BlockSection icon={BrainCircuit} title="市场状态信号(本机测算)" hint="五维加权健康分(0–100,分越高越正面):情绪 / 龙头 / 抗跌度 / 赚钱效应 / 事件。抗跌度原名「风险」,量的是安全度,分低才是危险。事件面只取央视《新闻联播》标题做宏观词典扫描(不接大模型、权重封顶 8%);涨跌分布没取到时明确说「算不出来」,不给分数、不设仓位上限;东财断连时由新浪备源接住。" kind="marketState" block={v.marketState} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <BlockSection icon={LayoutDashboard} title="指数实时(腾讯)" hint="A 股主要指数的实时涨跌(腾讯源)。" kind="indices" block={v.indices} />

@@ -14,11 +14,12 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { CONSTITUTION_REL } from "./config.ts";
+import { CONSTITUTION_REL, PYTHON_UTF8_ENV } from "./config.ts";
 import { NOFOLLOW_FLAG, nowIso, privateFilePermissions, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
 import { assertDataRootInside, detectPython, gitignoreCovers, resolveDataRoot } from "./init.ts";
 import { loadSavedAgentPaths, probeClaude, probeCodeBuddy, probeCodex, type LocalAgentStatus } from "./local_agent_runtime.ts";
 import { loadProductConfig, type LoadedProductConfig } from "./productConfig.ts";
+import { readSavedLlm, savedLlmFile } from "./page_saved_llm.ts";
 import { parseArgs } from "./run.ts";
 import { isCliProvider, resolveSelectedRuntime, RuntimeProviderError } from "./runtime_provider.ts";
 import { fetchEndpoint, redact, repoRootFromHere, safePath, serviceContext } from "./service.ts";
@@ -79,7 +80,8 @@ const AGENT_FIX: Record<LocalAgentStatus["provider"], string> = {
 export function minimalEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"]) if (base[k]) out[k] = base[k] as string;
-  return out;
+  // python 探针的输出也按 utf8 解;不带这两项在 Windows 上会按 cp936 写,中文成替换符(见 config.PYTHON_UTF8_ENV)
+  return { ...out, ...PYTHON_UTF8_ENV };
 }
 
 export const defaultExec: Exec = (cmd, args, opts = {}) => {
@@ -214,33 +216,46 @@ export async function runDoctor(opts: {
   if (dataRootOk) loadSavedAgentPaths(dataRoot);  // 设置页手动指定的 WorkBuddy 位置也要算进体检
   try { agents = await (opts.probeAgents ?? ((e) => Promise.all([probeClaude(e), probeCodex(e), probeCodeBuddy(e)])))(env); }
   catch (e) { probeError = sub(e instanceof Error ? e.message : String(e)); }
-  // 3a. 后台默认 AI 来源(命令行研究 / 批量运行用;页面每次请求自带所选来源,不依赖它)
+  // 3a. 后台默认 AI 来源(命令行研究 / 批量运行 / **到点自动跑的那三个 AI 任务**用;页面每次请求自带所选来源,不依赖它)
+  // 🔴 判据与 `defaultLlm` 同一套:页面「接入 AI」保存过就用那一份(数据根 llm.json),否则用 config.json。
+  //    只看 config.json 会造出"体检说一切正常、三个定时任务其实在用另一家"——那正是 2026-11-05 丢了一天复盘的情形。
   let defaultUsable = false;
-  const profile = pc?.provider.profile ?? null;
+  const savedLlm = readSavedLlm(dataRoot);
+  const envOverride = Boolean(String(env.VRA_PROVIDER ?? "").trim());
+  const pageInEffect = Boolean(savedLlm.source) && !envOverride;
+  const profile = pageInEffect && savedLlm.source ? savedLlm.source.provider : (pc?.provider.profile ?? null);
+  const sourceLabel = pageInEffect ? "页面「接入 AI」保存的那份" : "后台默认 AI 来源";
   if (!pc) add({ id: "ai_default", title: "后台默认 AI 来源", status: "skip", detail: "产品配置链未通过,无法确定后台默认" });
-  else if (!profile) add({ id: "ai_default", title: "后台默认 AI 来源", status: "skip", detail: "未设。页面每次请求自带所选来源,不受影响;命令行研究 / 批量运行需要 --provider,或在 .local/config.json 写 provider.profile" });
+  // 坏文件挡在所有来源前面:defaultLlm 会直接报错,不会"退回 config.json" —— 体检必须也说这一步不通
+  // (环境变量显式指定了来源时不挡:那种情况下 llm.json 压根不参与解析)
+  else if (savedLlm.problem && !envOverride) add({ id: "ai_default", title: "页面保存的 AI 来源", status: "fail", detail: sub(`读不懂 ${savedLlmFile(dataRoot)}:${savedLlm.problem}`), fix: "到「接入 AI」重新保存一次(或把那个文件删掉,回到 config.json 里的默认来源)" });
+  else if (!profile) add({ id: "ai_default", title: "后台默认 AI 来源", status: "skip", detail: "未设。页面每次请求自带所选来源,不受影响;命令行研究 / 批量运行需要 --provider,或在 .local/config.json 写 provider.profile,或在「接入 AI」保存一次" });
   else if (isCliProvider(profile)) {
     const a = agents.find((x) => x.provider === profile);
-    if (!a) add({ id: "ai_default", title: "后台默认 AI 来源", status: "fail", detail: probeError ? `${profile}:登录状态检测失败(${probeError})` : `${profile} 不是支持的本机订阅 Agent(只支持 cli-claude / cli-codex / cli-codebuddy)`, fix: "改成支持的来源,或换成 providers/ 里的模型 API 模板" });
+    if (!a) add({ id: "ai_default", title: sourceLabel, status: "fail", detail: probeError ? `${profile}:登录状态检测失败(${probeError})` : `${profile} 不是支持的本机订阅 Agent(只支持 cli-claude / cli-codex / cli-codebuddy)`, fix: "改成支持的来源,或换成 providers/ 里的模型 API 模板" });
     else {
       defaultUsable = a.available;
-      add({ id: "ai_default", title: "后台默认 AI 来源", status: a.available ? "ok" : "fail", detail: `${profile}(${a.name}${a.version ? ` ${a.version}` : ""}):${a.detail}`, fix: a.available ? undefined : AGENT_FIX[a.provider] });
+      add({ id: "ai_default", title: sourceLabel, status: a.available ? "ok" : "fail", detail: `${profile}(${a.name}${a.version ? ` ${a.version}` : ""}):${a.detail}`, fix: a.available ? undefined : AGENT_FIX[a.provider] });
     }
   } else {
     try {
       const rt = resolveSelectedRuntime(repoRoot, dataRoot, undefined, env);
       if (rt.runtime !== "api") throw new RuntimeProviderError("bad_provider", `${profile} 解析成了本机 Agent`);
       defaultUsable = true;
-      add({ id: "ai_default", title: "后台默认 AI 来源", status: "ok",
-        detail: `模型 API ${rt.api.label}(${new URL(rt.api.baseURL).host},模型 ${rt.api.model});密钥变量 ${rt.api.envKey} 已设置${rt.api.verified ? "" : `;${rt.api.reason ?? "产品没有实测过这个模板"}`}` });
+      add({ id: "ai_default", title: sourceLabel, status: "ok",
+        detail: pageInEffect
+          ? `模型 API ${rt.api.label}(${new URL(rt.api.baseURL).host},模型 ${rt.api.model});密钥在 ${savedLlmFile(dataRoot)}${rt.api.verified ? "" : `;${rt.api.reason ?? "产品没有实测过这个模板"}`}`
+          : `模型 API ${rt.api.label}(${new URL(rt.api.baseURL).host},模型 ${rt.api.model});密钥变量 ${rt.api.envKey} 已设置${rt.api.verified ? "" : `;${rt.api.reason ?? "产品没有实测过这个模板"}`}` });
     } catch (e) {
       const code = e instanceof RuntimeProviderError ? e.code : "";
       const msg = e instanceof Error ? e.message : String(e);
-      add({ id: "ai_default", title: "后台默认 AI 来源", status: "fail", detail: sub(msg),
+      add({ id: "ai_default", title: sourceLabel, status: "fail", detail: sub(msg),
         fix: code === "provider_renamed"
           ? "把 provider.profile(或环境变量 VRA_PROVIDER)改成 cli-codex(ChatGPT 订阅,用你自己登录的 Codex CLI)或 openai-api(OpenAI 官方 API,按量计费)"
           : code === "missing_key"
-          ? `在启动产品的终端里 export 上面提到的环境变量(密钥只从环境变量读,不写进配置文件)${profile === "openai-api" ? ";想用 ChatGPT 订阅请把 provider.profile 改成 cli-codex" : ""}`
+          ? (pageInEffect
+            ? "这份来自页面「接入 AI」:到那一页重新连接一次(保存时会带上 key),不要把 key 手写进 llm.json"
+            : `在启动产品的终端里 export 上面提到的环境变量(密钥只从环境变量读,不写进配置文件)${profile === "openai-api" ? ";想用 ChatGPT 订阅请把 provider.profile 改成 cli-codex" : ""}`)
           : "检查 provider.profile 是否为 providers/ 里的模板 id,以及模板内容" });
     }
   }

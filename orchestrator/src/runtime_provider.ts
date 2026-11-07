@@ -18,6 +18,7 @@ import path from "node:path";
 
 import { PROVIDER_ID_RE, apiCapabilityOf, apiVerificationOf, loadProviderProfile, providerUrlError, renamedProviderHint, type StructuredOutputMode } from "./providers.ts";
 import { loadProductConfig } from "./productConfig.ts";
+import { readSavedLlm, savedLlmFile } from "./page_saved_llm.ts";
 import type { LocalAgentId } from "./local_agent_runtime.ts";
 
 /** 界面传下来的那一份。字段名与开源版一致，便于上游页面直接复用。 */
@@ -212,8 +213,26 @@ export interface DefaultSourceOptions { providerOverride?: string; model?: strin
 /**
  * 后台默认 AI 来源 → 一份与页面请求同形的 LlmOverride(模型 API 的 key 从模板声明的环境变量取)。
  * 服务层用它把"后台默认"也变成一份显式的请求级来源交给研究子进程,子进程只照着执行、不再自己猜。
+ *
+ * 优先级(高 → 低),**每一层都是显式的,不许静默回落**:
+ *   ① 命令行 `--provider` / `--model` / `--config`:当次运行的人自己点的;
+ *   ② 环境变量 `VRA_PROVIDER`:运维/脚本显式设的;
+ *   ③ 页面「接入 AI」里保存的那一份(`<数据根>/llm.json`,见 page_saved_llm.ts)——
+ *      定时任务没有浏览器,靠这一份拿到和页面**同一个**大脑;
+ *   ④ `config.json` 的 `provider.profile` + 模板声明的环境变量里的 key。
  */
 export function defaultLlm(repoRoot: string, dataRoot: string, baseEnv: NodeJS.ProcessEnv = process.env, opts: DefaultSourceOptions = {}): LlmOverride {
+  const cliOverride = opts.providerOverride !== undefined || opts.model !== undefined || opts.userConfigPath !== undefined;
+  if (!cliOverride && !String(baseEnv.VRA_PROVIDER ?? "").trim()) {
+    const saved = readSavedLlm(dataRoot);
+    // 🔴 文件在但读不懂 → 报错，**不**改用 config.json 里那家:那等于用户选了这家的界面、
+    //    账单和产出却来自另一家，而且没有任何提示(2026-11-05 就是这么白丢了一天的复盘)。
+    if (saved.problem) {
+      throw new RuntimeProviderError("bad_llm",
+        `页面保存的 AI 配置读不懂了（${savedLlmFile(dataRoot)}）：${saved.problem}。请到「接入 AI」重新保存一次`);
+    }
+    if (saved.source) return saved.source;
+  }
   let pc: ReturnType<typeof loadProductConfig>;
   try {
     pc = loadProductConfig(repoRoot, { dataRootOverride: dataRoot, env: baseEnv, providerOverride: opts.providerOverride, userConfigPath: opts.userConfigPath });

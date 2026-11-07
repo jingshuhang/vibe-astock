@@ -1,7 +1,7 @@
 /**
  * 市场状态信号的界面数据(后端见 orchestrator/src/finance/market_state.ts)。
  *
- * 五维加权健康分:情绪 0.30 / 龙头 0.15 / 风险 0.15 / 赚钱效应 0.25 / 事件 0.15。
+ * 五维加权健康分:情绪 0.30 / 龙头 0.15 / 抗跌度(原「风险」) 0.15 / 赚钱效应 0.25 / 事件 0.15。
  * 🔴 这五个是**名义**权重。某一维没有数据源时(例如事件面没取到新闻联播)，后端会把它让渡给
  *    其余维度并在 `signal.weights` 里返回**实际**权重 —— 页面上必须显示实际的，
  *    否则用户拿 0.30/0.15/… 自己乘一遍，永远对不上页面上的综合分。
@@ -49,6 +49,8 @@ export interface MarketSignal {
   base_note?: string | null;
   /** 仓位建议上限；🔴 null = 算不出来、不设上限，不是 0（0 是「算出来了、一股别买」） */
   position_cap_pct: number | null;
+  /** 赚钱效应缺的腿；空数组 = 数据齐。缺腿时分数中性补位但仓位上限压到 40%（旧快照可能没有这个字段） */
+  incomplete_legs?: string[];
   /** null = 算不出来。不能因为取数失败就当成 false 去禁止开新仓 */
   can_open_position: boolean | null;
   risk_level: RiskLevel | null;
@@ -129,6 +131,23 @@ export interface MarketStateResult {
   gate?: { all_pass: boolean; blockers: string[]; unknown: string[]; items?: GateItem[] };
   notes: string[];
 }
+
+/**
+ * 五维在界面上的**名字与方向**。两个页面（「市场状态」独立页 / 「盯盘」内嵌版）共用这一份。
+ *
+ * 🔴 五维的分数方向是**一致的**：0–100，分越高越正面。没有反向维。
+ *    原来叫「风险」的那一维量的是 `100 − (跌停×2 + 跌家占比×100)`，即**安全度**——
+ *    15 分是「极危险」，不是「风险只有 15」。名字与方向拧着，实测有人读反了，
+ *    所以改名「抗跌度」，并在每个环下写明高分那一端是什么意思。
+ *    **只改叫法与说明，不改字段名 `risk` / `risk_score`、不改分数、不改权重。**
+ */
+export const DIMENSION_LABELS = {
+  emotion: { label: "情绪", hint: "越高越热" },
+  dragon: { label: "龙头", hint: "越高越强" },
+  risk: { label: "抗跌度", hint: "越高越安全" },
+  earning: { label: "赚钱效应", hint: "越高越好赚" },
+  event: { label: "事件", hint: "越高越偏多" },
+} as const;
 
 export const RISK_LEVEL_META: Record<RiskLevel, { label: string; tone: string }> = {
   low: { label: "低风险", tone: "text-emerald-600 bg-emerald-50 border-emerald-200" },

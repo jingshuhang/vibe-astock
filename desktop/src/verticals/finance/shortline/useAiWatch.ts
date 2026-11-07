@@ -1,14 +1,15 @@
 /**
  * AI 盯盘 · 实时动态版
  *
- * 基于 LiveTab 的 WatchView（持仓/自选/异动/梯队/大票），每 10 分钟触发一次
+ * 基于 LiveTab 的 WatchView（持仓/自选/异动/梯队/大票），每 3 分钟触发一次
  * 瞬时分析，只显示最新一轮的结果，历史存档仅供连续性判断。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hasLlm, chatStream, type ChatMsg } from "@/lib/llm";
 import type { WatchView, AlertKind } from "./watchTypes";
 
-const POLL_INTERVAL_MS = 10 * 60 * 1000;
+/** 2026-11-06 由 10 分钟改成 3 分钟（与 useIntradayAiWatch 同步，两处必须一致） */
+const POLL_INTERVAL_MS = 3 * 60 * 1000;
 
 const INTRADAY_PHASES = new Set(["morning", "afternoon", "auction", "closing_auction"]);
 
@@ -262,8 +263,8 @@ export function useAiWatch(v: WatchView | null): AiWatchState {
   }, []);
 
   useEffect(() => {
-    // 只在「交易时段」内跑:进入盘中立即分析一次,之后严格每 10 分钟一次。
-    // 依赖用 v?.phase 而非 v 本身 —— v 每 3 秒换引用,放进依赖会每 3 秒重触发,把 10 分钟节奏架空。
+    // 只在「交易时段」内跑:进入盘中立即分析一次,之后严格每 3 分钟一次。
+    // 依赖用 v?.phase 而非 v 本身 —— v 每 3 秒换引用,放进依赖会每 3 秒重触发,把 3 分钟节奏架空。
     const isNowIntraday = !!v && INTRADAY_PHASES.has(v.phase);
     setIntraday(isNowIntraday);
     if (!isNowIntraday) return;

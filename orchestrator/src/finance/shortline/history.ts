@@ -14,6 +14,7 @@ import { localClock } from "../../notify.ts";
 import { fetchEndpoint, ServiceError, type ServiceContext } from "../../service.ts";
 import { klineBars } from "../abnormal.ts";
 import { SCHEDULE_TZ, failedNote, pool } from "../schedule.ts";
+import { consistencyFor as endpointConsistencyFor } from "../snapshot_ttl.ts";
 
 export type ReadingKind = "count" | "rate" | "pct";
 
@@ -51,6 +52,12 @@ export const DAYS_MAX = 60;
 /** 第一次要把每天算一遍(每天约 4 次东财请求):并发压低,别把东财打到限流 */
 const CONCURRENCY = 3;
 const KLINE_MAX_AGE_MS = 5 * 60 * 1000;
+/**
+ * 已收盘历史日的内容不可变,但仍不许走「无上限」的 `prefer_cache`:
+ * 给 30 天显式上限,既保住「历史越用越长」,又和 `snapshot.ts` 的缺省语义一致。
+ * 超过东财保留期的日子仍走 `cache_only`,不联网。
+ */
+export const HISTORY_IMMUTABLE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** 东财涨停 / 炸板 / 昨日涨停池能往回查多少个日历日(2026-10-10 实测 29 天,留一天余量)。更早的只读缓存 */
 export const SOURCE_RETENTION_DAYS = 28;
 export const HISTORY_SOURCE = "东财涨停 / 炸板 / 昨日涨停池(每天一次 cn_shortline_daily,已收盘的日子读缓存)";
@@ -186,9 +193,15 @@ export function retentionFloor(now: Date): string {
   return new Date(Date.parse(`${today}T00:00:00Z`) - SOURCE_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** 取某天的取数方式:显式刷新的那天现取;超过保留期的只读缓存;其余优先缓存(没收盘的那天快照层本来就不存) */
-export function consistencyFor(d: string, oldest: string, fresh: boolean) {
-  return fresh ? { mode: "fresh" as const } : d < oldest ? { mode: "cache_only" as const } : { mode: "prefer_cache" as const };
+/**
+ * 取某天的取数方式:显式刷新的那天现取;超过保留期的只读缓存;其余优先缓存但带显式上限。
+ * `endpoint` 给了就按端点表(如 `em_market_trend` 5 分钟)取时效,不给则按「已收盘历史日」给 30 天。
+ */
+export function consistencyFor(d: string, oldest: string, fresh: boolean, endpoint?: string) {
+  if (fresh) return { mode: "fresh" as const };
+  if (d < oldest) return { mode: "cache_only" as const };
+  if (endpoint) return endpointConsistencyFor(endpoint, false);
+  return { mode: "prefer_cache" as const, max_age_ms: HISTORY_IMMUTABLE_MAX_AGE_MS };
 }
 
 export const noteOf = (e: unknown) => e instanceof ServiceError && e.code === "no_snapshot" ? "超过东财保留期,当时也没缓存" : e instanceof Error ? e.message.slice(0, 60) : "没取到";

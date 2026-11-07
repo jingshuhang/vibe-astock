@@ -859,17 +859,19 @@ def market_breadth() -> dict:
             except (TypeError, ValueError):
                 continue
             if -11 <= key <= 11:
-                buckets.append({"key": key, "label": _zdfb_label(key), "count": n, "_raw": ref_fb})
+                buckets.append({"key": key, "label": _zdfb_label(key), "count": n, "source": "eastmoney", "_raw": ref_fb})
     # 东财分布没取到(盘前 / push2ex 风控断连)→ 改用新浪全市场快照聚合(独立备源,不同主机)
     if not buckets:
         try:
             from sources import sina
             sina_dist = sina.sina_updown_distribution()
+            sina_source = sina_dist.get("source") or "sina"
             for b in (sina_dist.get("buckets") or []):
-                buckets.append({"key": b["key"], "label": b["label"], "count": b["count"], "_raw": None})
+                buckets.append({"key": b["key"], "label": b["label"], "count": b["count"],
+                                "source": sina_source, "_raw": None})
             if not day and sina_dist.get("date"):
                 day = sina_dist["date"]
-            notes.append("东财涨跌分布没取到,改用新浪全市场快照聚合(备源)")
+            notes.append(f"东财涨跌分布没取到,改用新浪全市场快照聚合(备源 source={sina_source})")
         except Exception as e:  # noqa: BLE001
             notes.append(f"新浪备源涨跌分布也没取到({type(e).__name__})")
     buckets.sort(key=lambda b: -b["key"])

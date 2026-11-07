@@ -227,6 +227,17 @@ export const FINANCE_PLUGIN: Plugin = {
     const { analyzeStock } = await import("./stock_analysis.ts");
     return analyzeStock(ctx as ServiceContext, symbol, opts);
   },
+  /**
+   * 盘中异动常驻采集:连续竞价每 3 秒一拍,页面关着也照采(以前靠页面轮询带动,没人在看就断档)。
+   * 不抛错、不拦截进程退出 —— 采集起不来只记一行,别的功能照常。`VRA_ALERT_COLLECTOR=off` 可关。
+   */
+  onStartup: (ctx) => {
+    if (process.env.VRA_ALERT_COLLECTOR === "off") return;
+    void (async () => {
+      const { startAlertCollector } = await import("./shortline/watch.ts");
+      startAlertCollector(ctx as ServiceContext);
+    })().catch((e: unknown) => console.error(`[collector] 常驻采集没起来:${e instanceof Error ? e.message : String(e)}`));
+  },
   doctorChecks: ({ dataRoot }) => {
     const rows = thermoLedgerOverview({ dataRoot });
     const bad = rows.filter((r) => r.unreadable || r.dropped > 0);

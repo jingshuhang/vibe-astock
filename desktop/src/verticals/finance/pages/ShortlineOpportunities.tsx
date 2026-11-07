@@ -3,6 +3,7 @@ import { RefreshCw, ShieldCheck, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { backend, ApiError } from "@/lib/backend";
+import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 import { isMarketTrading } from "@/lib/marketSymbol";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { cn } from "@/lib/utils";
@@ -206,6 +207,8 @@ export function ShortlineOpportunities() {
   const [trackWhy, setTrackWhy] = useState<string | null>(null);
   const [trackLoading, setTrackLoading] = useState(true);
   const seq = useRef(0);
+  /** 最近一次**取完数**的时刻 —— 自动刷新据此决定切回前台要不要补 */
+  const loadedAt = useRef<number | null>(null);
 
   /** 佐证三件套：盘中路径 / 市场状态 / 实时动态。各自失败各自降级，只要有一个回来就能算。
    *  opps 显式传参，不从闭包抓 data —— 依赖数组留空时闭包里的 data 永远是首帧的 null，
@@ -248,6 +251,7 @@ export function ShortlineOpportunities() {
       const r = await backend.shortlineOpportunities({ refresh });
       if (my !== seq.current) return;
       setData(r); setError("");
+      loadedAt.current = Date.now();
       void loadVerify(r.date, my, r);
     } catch (e) {
       if (my === seq.current) setError(e instanceof ApiError || e instanceof Error ? e.message : String(e));
@@ -257,6 +261,9 @@ export function ShortlineOpportunities() {
   }, [loadVerify]);
 
   useEffect(() => { void load(false); }, [load]);
+
+  // 这一页原来**没有定时器**：清单与验证流只会停在打开那一刻。交易时段每 2 分钟一次 + 切回补刷。
+  useMarketAutoRefresh({ onTick: () => { void load(false); }, loadedAt: loadedAt.current });
 
   // 战绩台账独立取:失败只写降级文案,不影响清单/验证流
   useEffect(() => {

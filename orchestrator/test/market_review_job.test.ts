@@ -166,6 +166,7 @@ test("存进研究记录(note / category=review),同一天不重复写,手动运
     let calls = 0;
     const turn = async () => { calls++; return TEXT; };
     const r = await dailyReviewJob(jobOf(ctx), { turn });
+    assert.equal(r.status, "partial", "资料包有缺口,任务状态必须显式报 partial");
     assert.equal(r.messages.length, 1);
     assert.equal(r.messages[0]!.dedupeKey, "daily_review_ai:2026-10-30");
     assert.equal(r.messages[0]!.link, "/daily-review");
@@ -211,6 +212,18 @@ test("整屏一块都没取到:报错(不许把取数失败写成「今天没什
     // 除交易日历外全部失败
     ctx.setCfg({ ...CFG, dead: ["em_market_breadth", "em_limit_up_sentiment", "em_zt_pool", "em_yzt_pool", "em_market_trend", "em_market_margin", "index_valuation", "chinabond_yield_curve", "em_board_fund_flow", "em_turnover_rank", "em_daily_dragon_tiger"] });
     await assert.rejects(dailyReviewJob(jobOf(ctx), { turn: async () => TEXT }), /一块都没取到/);
+    assert.deepEqual(ledgerList(ctx, "note").note ?? [], []);
+  } finally { ctx.cleanup(); }
+});
+
+test("正文生成了但研究记录没落进去:抛错,不许报成功", async () => {
+  const ctx = fakeCtx();
+  try {
+    ctx.setCfg(CFG);
+    await assert.rejects(
+      dailyReviewJob(jobOf(ctx), { turn: async () => TEXT, save: () => undefined }),
+      /研究记录没写进去/,
+    );
     assert.deepEqual(ledgerList(ctx, "note").note ?? [], []);
   } finally { ctx.cleanup(); }
 });

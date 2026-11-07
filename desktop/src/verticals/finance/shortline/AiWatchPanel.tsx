@@ -43,7 +43,7 @@ export function AiWatchPanel({ state, title = "AI 盯盘", pausedHint }: {
           <div>
             <span className="text-sm font-semibold text-foreground">{title}</span>
             <span className="ml-2 text-[11px] text-muted-foreground">
-              {intraday ? "盘中自动 · 10 分钟更新" : "非交易时段"}
+              {intraday ? "盘中自动 · 3 分钟更新" : "非交易时段"}
             </span>
           </div>
         </div>

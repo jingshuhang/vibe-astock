@@ -10,7 +10,7 @@ import "../src/finance/register_tasks.ts";
 import { detectPython } from "../src/init.ts";
 import { ServiceError, type ServiceContext } from "../src/service.ts";
 import { listViews } from "../src/views.ts";
-import { DAYS_MAX, MIN_SAMPLES, READINGS, SOURCE_RETENTION_DAYS, contextFor, diffFor, percentile, shortlineHistory, valuesOf, type Values } from "../src/finance/shortline/history.ts";
+import { DAYS_MAX, HISTORY_IMMUTABLE_MAX_AGE_MS, MIN_SAMPLES, READINGS, SOURCE_RETENTION_DAYS, consistencyFor, contextFor, diffFor, percentile, shortlineHistory, valuesOf, type Values } from "../src/finance/shortline/history.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PY = process.env.VRA_PYTHON ?? detectPython(REPO) ?? detectPython(path.join(REPO, "..")) ?? "python3";
@@ -28,6 +28,19 @@ test("分位:样本不到 10 天不给;小于等于它的比例;值缺失不给"
   assert.equal(percentile(null, range(1, 10)), null);
   assert.equal(percentile(5, [...range(1, 9), null, null]), null, "缺的日子不算样本");
   assert.equal(percentile(2, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), 0.167);
+});
+
+test("历史路径的 consistencyFor 不许再返回无上限 prefer_cache", () => {
+  const today = "2026-11-06";
+  const oldest = "2026-10-09";
+  assert.deepEqual(consistencyFor(today, oldest, true), { mode: "fresh" });
+  assert.deepEqual(consistencyFor("2026-10-01", oldest, false), { mode: "cache_only" });
+  const settled = consistencyFor("2026-10-20", oldest, false);
+  assert.equal(settled.mode, "prefer_cache");
+  assert.equal((settled as { max_age_ms?: number }).max_age_ms, HISTORY_IMMUTABLE_MAX_AGE_MS);
+  const trend = consistencyFor(today, oldest, false, "em_market_trend");
+  assert.equal(trend.mode, "prefer_cache");
+  assert.equal((trend as { max_age_ms?: number }).max_age_ms, 5 * 60_000, "非日期端点要按端点表走 5 分钟");
 });
 
 test("六项读数:方向和噪声门槛跟 VA 一样", () => {

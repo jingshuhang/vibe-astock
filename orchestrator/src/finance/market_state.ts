@@ -34,10 +34,12 @@
 
 import { fetchEndpoint, type FetchResult, type ServiceContext } from "../service.ts";
 import { clockOf } from "./shortline/intraday.ts";
+import { consistencyFor, wantsFresh } from "./snapshot_ttl.ts";
 import { breadthFrom } from "./shortline/overview.ts";
 import {
   scoreMarket,
   positionCapOf,
+  INCOMPLETE_DATA_CAP_PCT,
   riskLevelOf,
   type EffectiveWeights,
   type GateItem,
@@ -81,6 +83,12 @@ export interface MarketSignal {
    * 0 是「算出来了，一股别买」，null 是「不知道」。把 null 当 0 用，一次取数失败就会全面禁止开仓。
    */
   position_cap_pct: number | null;
+  /**
+   * 赚钱效应缺的腿（「板块共振」/「板块资金流」）；空数组 = 数据齐。
+   * 🔴 它与仓位上限是因果关系：缺腿时分数按中性补位、看着正常，但上限只能到「轻仓试探」。
+   *    用结构化字段而不是让调用方去 notes 里搜文案 —— 措辞一改就静默失效的教训见 evaluateMarketGate。
+   */
+  incomplete_legs?: string[];
   /** 是否适合开新仓（仓位上限 ≥ 40% 且不是极高风险）；null = 算不出来 */
   can_open_position: boolean | null;
   /** 风险等级：由**风险分**决定（不是由 composite 反推）；null = 算不出来 */
@@ -423,7 +431,12 @@ export function deriveMarketSignal(
   });
   const boardRows = boardFlow.rows ?? [];
   const inflowCount = boardRows.filter((r) => (r.net_yi ?? 0) > 0).length;
-  const inflowRate = boardRows.length ? inflowCount / boardRows.length : 0;
+  // 🔴 一行都没有 = 资金流没取到 → null(该条腿的权重让渡),不能写 0 —— 0 的意思是「有数据但一个板块都没净流入」
+  const inflowRate = boardRows.length ? inflowCount / boardRows.length : null;
+  // 共振同理:既没聚合占比、也没有展示行 = 没取到
+  const hasResonance = resonance.resonance_share != null || (resonance.rows ?? []).length > 0;
+  // 完备性要在算仓位上限之前就定下来：它既决定分数怎么补位，也决定这个分数能用到多重的仓
+  const missingLegs = [!hasResonance ? "板块共振" : "", inflowRate === null ? "板块资金流" : ""].filter(Boolean);
 
   // 五维打分 + 门槛制阶段（全仓唯一一份，见 market_score.ts）
   const dims = scoreMarket({
@@ -445,7 +458,9 @@ export function deriveMarketSignal(
   const downRate = total > 0 ? down / total : 0;
 
   const riskLevel = riskLevelOf(dims.risk, { limitDown, downRate });
-  const positionCapPct = positionCapOf(dims.composite, dims.gate);
+  // 🔴 缺腿日不许给满仓：分数按中性补位是「不冤枉这一天」，不是「这一天数据齐」。
+  //    与「闸门未评估」共用 INCOMPLETE_DATA_CAP_PCT，不另设标准。
+  const positionCapPct = positionCapOf(dims.composite, dims.gate, { dataIncomplete: missingLegs.length > 0 });
   // 「能不能开新仓」要求上限至少到「轻仓试探」(40%)。20% 那一档的含义是
   // 「已经拿着的仓位最多留这么多」，不是「可以新开」—— 两者混起来就等于放松了纪律。
   const canOpenPosition = positionCapPct >= 40 && riskLevel !== "extreme";
@@ -461,6 +476,13 @@ export function deriveMarketSignal(
   if (fresh.stale.length) {
     notes.push(`以下维度的数据不是 ${today} 的：${fresh.stale.join(" / ")}（读数可能已被冻结，建议重新取数）`);
   }
+  // 赚钱效应的腿缺了要明说:分数按中性补位(不按 0)、仓位上限另外压一档，两件事都写清楚。
+  // 不写的话分数看着正常、仓位看着也正常，其实少看了东西 —— 典型的「不报错但给错答案」。
+  if (missingLegs.length) {
+    // 说「最多」不说「压到」：40% 是天花板，取小之后完全可能被闸门/分数压得更低。
+    // 实机 2026-11-06 就是 cap=0（三门全灭），写「压到 40%」会与同屏「仓位上限归零」打架。
+    notes.push(`赚钱效应的${missingLegs.join("、")}没取到，这部分按中性补位（既不当 0 分，也不会因为缺数据反而变好）；仓位上限因此最多 ${INCOMPLETE_DATA_CAP_PCT}%（与「闸门未评估」同一档，不拿取数故障当利好），实际 ${positionCapPct}%${missingLegs.length === 2 ? "；这一维现在等于只剩广度，可信度低于平时" : ""}`);
+  }
   if (dims.gate.unknown.length) notes.push(`闸门未评估：${dims.gate.unknown.join("；")}`);
 
   return {
@@ -469,6 +491,7 @@ export function deriveMarketSignal(
     base_phase: dims.base_stage,
     base_note: dims.base_note,
     position_cap_pct: positionCapPct,
+    incomplete_legs: missingLegs,
     can_open_position: canOpenPosition,
     risk_level: riskLevel,
     emotion_score: dims.emotion,
@@ -566,7 +589,7 @@ export function buildMarketStateView(
   const pct = (v: number | null) => (v === null ? "—" : `${Math.round(v * 100)}%`);
   const parts: string[] = [];
   parts.push(`上涨家数 ${pct(upRate)}，涨停 ${limitUp} / 跌停 ${limitDown}`);
-  parts.push(`综合 ${signal.composite} 分（情绪 ${signal.emotion_score}·龙头 ${signal.dragon_score}·风险 ${signal.risk_score}·赚钱效应 ${signal.earning_score}${signal.event_score === null ? "·事件未算出" : `·事件 ${signal.event_score}`}）`);
+  parts.push(`综合 ${signal.composite} 分（五维 0–100、分越高越正面：情绪 ${signal.emotion_score}·龙头 ${signal.dragon_score}·抗跌度 ${signal.risk_score}·赚钱效应 ${signal.earning_score}${signal.event_score === null ? "·事件未算出" : `·事件 ${signal.event_score}`}）`);
   if (signal.gate_blockers.length) {
     // 🔴 只写摘要：明细在 gate_blockers 里已经逐条给前端渲染了。
     //    早先把 join("；") 整段塞进 reason，于是页面上三道门的文字出现两遍（一遍是闸门卡，一遍在这句里）。
@@ -575,6 +598,13 @@ export function buildMarketStateView(
   else if (signal.gate_unknown.length) parts.push(`闸门部分未评估：${signal.gate_unknown.join("；")}`);
   else parts.push("三道闸门全通过");
   if (signal.can_open_position === false && signal.risk_level === "extreme") parts.push("极高风险，仓位上限归零");
+  // 结构化字段驱动，不去 notes 里搜关键字：措辞改了这句也不会静默消失。
+  // 🔴 只在完备性**真的是那个约束项**时才说「压到 40%」：缺腿时 cap 必然 ≤40，
+  //    等于 40 才是它压下来的；cap 更低时闸门/分数已经压得更死，这里再讲一遍
+  //    就会和「仓位上限归零」并列成两句互相打架的话。
+  if (signal.incomplete_legs?.length && cap === INCOMPLETE_DATA_CAP_PCT) {
+    parts.push(`赚钱效应缺${signal.incomplete_legs.join("、")}，仓位上限压到 ${INCOMPLETE_DATA_CAP_PCT}%`);
+  }
 
   return {
     date: clockOf(new Date()).day,
@@ -619,9 +649,20 @@ interface RawBundle {
  *
  * 🔴 并发纪律：一共 6 个端点，其中 `cctv_news` 已声明 1 小时缓存、
  *    且传 `with_content:false` 只发 1 次请求（不开 15 个详情页），
- *    trend / ladder 给 30s 短超时 —— 慢的那两个拖不动其余。
+ *    ladder 给 30s 短超时。
+ *
+ * 🔴 `em_market_trend` 给 **100s**，不是 30s —— 2026-11-05 实测把它拆开计时后改的：
+ *    腾讯那 7 根指数日线各只要 0.5s，而两市成交额那一项，东财 push2his 三个域名
+ *    （push2his / push2delay / 91.push2his）当周全断（RemoteDisconnected），只能落 baostock，
+ *    而 **baostock 登录单次就要 87s**。该端点 13 次真实耗时的中位数是 38.6s、尾部 88.2s，
+ *    9/13 超过 30s。
+ *    👉 30s 的后果不是「慢一点」，是**结构性失败**：超时 → trend 信封为 null → `gateDataFrom`
+ *       拿不到任何输入 → 量能门与均线门同时变成 unknown（广度门走另一个端点，所以只有它还亮）。
+ *       叠加失败记忆的 60s 负缓存，15s 轮询几乎一直吃到它，命中率≈0。
+ *    代价：冷启动那一屏最坏要等 100s；仍是单点，baostock 抖一下照样空。治本要另想办法
+ *    （见 CHANGELOG 里「20 日均额落盘」那条），这里先把「必然失败」降到「迟早能成」。
  */
-async function loadBundle(ctx: ServiceContext, session: string, abortSignal: AbortSignal): Promise<RawBundle> {
+async function loadBundle(ctx: ServiceContext, session: string, abortSignal: AbortSignal, force = false): Promise<RawBundle> {
   const notes: string[] = [];
   const one = async (endpoint: string, label: string, opts: { args?: Record<string, unknown>; timeoutMs?: number } = {}): Promise<FetchResult | null> => {
     try {
@@ -629,6 +670,11 @@ async function loadBundle(ctx: ServiceContext, session: string, abortSignal: Abo
         endpoint, session, signal: abortSignal,
         ...(opts.args ? { args: opts.args } : {}),
         ...(opts.timeoutMs ? { timeout_ms: opts.timeoutMs } : {}),
+        // 🔴 这 6 个端点原来**一个时效上限都没有**：`DEFAULT_CONSISTENCY` 是
+        //    `{mode:"prefer_cache"}` 不带 max_age，而快照键只由「端点+参数」决定、不含日期 ——
+        //    于是「市场状态」这一屏其实是**别人在替它刷**（em_market_breadth 由台账任务刷、
+        //    em_market_trend 由盯盘概况刷）。没人刷的那把键就永久冻结。
+        consistency: consistencyFor(endpoint, force),
       });
       // 🔴 上游「跑完了但 status=failed」不会抛异常。早先只有 catch 才记 note，
       //    于是新闻联播挂掉时事件面静默变 null，页面上只看到一个空环、什么原因都没有。
@@ -648,7 +694,7 @@ async function loadBundle(ctx: ServiceContext, session: string, abortSignal: Abo
     one("em_market_breadth", "涨跌分布"),
     one("em_industry_comparison", "板块共振"),
     one("sina_board_flow", "板块资金流"),
-    one("em_market_trend", "指数趋势/成交额", { timeoutMs: 30_000 }),
+    one("em_market_trend", "指数趋势/成交额", { timeoutMs: 100_000 }),
     one("cn_shortline_board_ladder", "连板天梯", { timeoutMs: 30_000 }),
     // 只要标题：正文要逐条开详情页(≈15 次请求)，对事件分没有增量信息
     one("cctv_news", "新闻联播", { args: { with_content: false }, timeoutMs: 30_000 }),
@@ -698,10 +744,10 @@ function shapeBundle(b: RawBundle): {
  */
 export async function marketStateAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   abortSignal: AbortSignal,
 ): Promise<MarketSignal> {
-  const bundle = await loadBundle(ctx, "market_state", abortSignal);
+  const bundle = await loadBundle(ctx, "market_state", abortSignal, wantsFresh(body?.refresh));
   const { breadth, resonance, boardFlow, gate, event, gateNotes } = shapeBundle(bundle);
 
   const result = deriveMarketSignal(breadth, resonance, boardFlow, gate, { provenance: bundle.provenance, event });
@@ -716,15 +762,22 @@ export async function marketStateAct(
  */
 export async function marketStateViewAct(
   ctx: ServiceContext,
-  _body: Record<string, unknown>,
+  body: Record<string, unknown>,
   abortSignal: AbortSignal,
 ): Promise<MarketStateView> {
-  const bundle = await loadBundle(ctx, "market_state_view", abortSignal);
+  // 🔴 前端「市场状态」页打的就是这个视图（`/view/market_state_view`），它的 `?refresh=1`
+  //    原来同样被丢掉 —— 页面上的「重新取数」按钮点了等于没点。
+  const bundle = await loadBundle(ctx, "market_state_view", abortSignal, wantsFresh(body?.refresh));
   const { breadth, resonance, boardFlow, gate, event, gateNotes } = shapeBundle(bundle);
 
   const sig = deriveMarketSignal(breadth, resonance, boardFlow, gate, { provenance: bundle.provenance, event });
   const view = buildMarketStateView(sig, breadth, resonance, gate);
-  view.notes = [...bundle.notes, ...gateNotes];
-  view.signal.notes = [...view.signal.notes, ...bundle.notes, ...gateNotes];
+  // 🔴 `view.notes` 才是前端「降级提示」渲染的那一份。原来只放取数降级 + 闸门说明，
+  //    derive 自己产出的那些（事件面没算出 / 赚钱效应缺腿压仓 / 闸门未评估）只留在
+  //    signal.notes 里，页面根本看不见 —— 缺口又被静默了一次，正是这轮要堵的那类问题。
+  //    两处共用同一个数组，也避免出现「同一份数据两个说法」。
+  const allNotes = [...sig.notes, ...bundle.notes, ...gateNotes];
+  view.signal.notes = allNotes;
+  view.notes = allNotes;
   return view;
 }

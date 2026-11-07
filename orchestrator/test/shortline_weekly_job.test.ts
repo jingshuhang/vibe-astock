@@ -146,6 +146,7 @@ test("周五正常跑:等它写完才报结果,消息里写清几段写成、合
     ctx.setCfg(CFG);
     const turn = fakeTurn();
     const r = await weeklyReviewJob(jobOf(ctx), { turn });
+    assert.equal(r.status, "partial", "有段跳过,任务状态必须显式报 partial");
     assert.equal(r.messages.length, 1);
     const m = r.messages[0]!;
     assert.equal(m.title, "AI 周报 2026-10-05 这一周已写完并存档");

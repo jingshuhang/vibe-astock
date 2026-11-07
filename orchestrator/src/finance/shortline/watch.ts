@@ -1,8 +1,11 @@
 /**
  * 盯盘 · 实时动态(移植自 Vibe AStock v2.0.0 vr/watchtower.py)。
  *
- * VA 用常驻线程每 3 秒全量轮询;这里改成**页面开着时由页面带动**:盯盘页每隔几秒请求一次,
- * 后台取行情、和上几次比、发现异动就记下来。判断状态放在后台进程里,开几个窗口都只算一份、不会重复报;页面关了就不取。
+ * 那口「钟」由**后台常驻采集**来敲(`startAlertCollector`,进程一起来就挂着):连续竞价每 3 秒一拍,
+ * 取行情、和上几次比、发现异动就记下来。页面变成纯消费者 —— 开着拿结果,关掉照采,
+ * 所以异动不再取决于「当时有没有人在看」。页面请求和后台采集走同一条路(`pollShared`):
+ * 在途共用一份、2.5 秒内不重算,开几个窗口都不会重复取、不会重复报;
+ * 同一数据目录起了两个后台时,`shortline/collector.lock` 只让一个进程采(见 `ensureLock`)。
  *
  * - 名单:持仓、自选、昨日梯队(昨日涨停股)、昨日成交额前十每次都取;500 亿以上大票(约 380 只)每 30 秒取一次。
  * - 规则(VA 同口径):3 分钟内涨跌 ≥ 1.5% 报急拉 / 急跌(至少攒够 1 分钟才判);碰到涨停价报封板,离开涨停价报开板;
@@ -328,8 +331,11 @@ function stateFor(ctx: ServiceContext, day: string): State {
   return st;
 }
 
-/** 测试用:清掉进程里的盯盘状态 */
-export function resetWatchState(): void { states.clear(); }
+/** 测试用:清掉进程里的盯盘状态,顺手停掉常驻采集(否则它会一直往已经删掉的目录里写) */
+export function resetWatchState(): void {
+  states.clear();
+  collectorStopFn?.();
+}
 
 async function calendar(ctx: ServiceContext, st: State, day: string, nowMs: number, fetch: Fetch, signal: AbortSignal): Promise<CalendarFacts | null> {
   const fresh = st.cal.day === day && nowMs - st.cal.at < (st.cal.ok ? 30 * 60_000 : 60_000);
@@ -455,21 +461,28 @@ async function pollOnce(ctx: ServiceContext, st: State, signal: AbortSignal, dep
 }
 
 /**
- * 盯盘页每隔几秒调一次:`{ action: "poll" }`。同时开着几个窗口时,2.5 秒内的请求共用上一次结果,在途的请求不重复发。
+ * 这一拍的取数与判断。**页面请求和后台采集共用同一条路**:
+ * 有在途的就等它;2.5 秒内刚算过就直接给上一份 —— 谁先到谁算,另一头拿现成结果,不会重复取、也不会重复写盘。
  */
-export async function shortlineWatchAct(ctx: ServiceContext, body: Record<string, unknown>, _signal: AbortSignal, deps: PollDeps = {}): Promise<WatchView> {
-  if (body.action !== "poll") throw new ServiceError("bad_request", "action 只能是 poll");
+async function pollShared(ctx: ServiceContext, st: State, deps: PollDeps): Promise<WatchView> {
   const clock = deps.clock ?? (() => new Date());
-  const now = clock();
-  const st = stateFor(ctx, clockOf(now).day);
   if (st.inflight) return st.inflight;
-  if (st.last && now.getTime() - st.lastAt < POLL_MS - 500) return st.last;
-  // 在途请求和发起它的页面解耦:那个页面关了,别的窗口还在等同一份结果
+  if (st.last && clock().getTime() - st.lastAt < POLL_MS - 500) return st.last;
+  // 在途这一拍和发起它的页面解耦:那个页面关了,别的窗口和后台采集还在等同一份结果
   const p = pollOnce(ctx, st, new AbortController().signal, deps)
     .then((v) => { st.last = v; st.lastAt = clock().getTime(); return v; })
     .finally(() => { st.inflight = null; });
   st.inflight = p;
   return p;
+}
+
+/**
+ * 盯盘页每隔几秒调一次:`{ action: "poll" }`。后台采集在跑时,这里多数直接拿现成结果。
+ */
+export async function shortlineWatchAct(ctx: ServiceContext, body: Record<string, unknown>, _signal: AbortSignal, deps: PollDeps = {}): Promise<WatchView> {
+  if (body.action !== "poll") throw new ServiceError("bad_request", "action 只能是 poll");
+  const clock = deps.clock ?? (() => new Date());
+  return pollShared(ctx, stateFor(ctx, clockOf(clock()).day), deps);
 }
 
 /** 某天记下的异动(复盘时回看):`?date=YYYY-MM-DD`,默认今天 */
@@ -479,4 +492,160 @@ export async function shortlineWatchAlerts(ctx: ServiceContext, query: Record<st
   if (!validDate(date)) throw new ServiceError("bad_query", "date 要写成 YYYY-MM-DD");
   if (date > today) throw new ServiceError("bad_query", `${date} 还没到`);
   return { date, alerts: loadAlerts(ctx.dataRoot, date) };
+}
+
+// ---------------------------------------------------------------- 后台常驻采集
+
+/**
+ * 采集每拍隔多久。0 = 这个时段不采,直接睡到下一个开盘窗口。
+ * 竞价 / 收盘竞价也采(15 秒),不是为了判断 —— 是先把名单和交易日历焐热,9:30:00 那一刻就能立刻判。
+ */
+export function collectorSleepMs(phase: Phase): number {
+  if (phase === "morning" || phase === "afternoon") return POLL_MS;
+  if (phase === "auction" || phase === "closing_auction") return 15_000;
+  if (phase === "lunch") return 60_000;
+  return 0;
+}
+
+/** 开盘前多久把采集叫醒:09:16 已经在集合竞价里,再给 14 分钟焐名单 */
+const WAKE_HMS = "09:16:00";
+const LOCK_STALE_MS = 90_000;
+const COLLECTOR_LOCK = "collector.lock";
+
+const secsOfHms = (hms: string): number => {
+  const p = hms.split(":").map((x) => parseInt(x, 10));
+  return (p[0] ?? 0) * 3_600 + (p[1] ?? 0) * 60 + (p[2] ?? 0);
+};
+
+/** 不采的时段睡多久:睡到 09:16。一次最长睡两小时(机器休眠 / 改系统时间后自己会再对一次表) */
+export function sleepUntilOpen(now: Date): number {
+  const cur = secsOfHms(clockOf(now).hms);
+  const wake = secsOfHms(WAKE_HMS);
+  const gap = cur < wake ? wake - cur : 86_400 - cur + wake;
+  return Math.min(gap * 1_000, 2 * 3_600_000);
+}
+
+interface CollectorLock { mine: () => boolean; touch: () => void; release: () => void }
+
+/** 删不掉锁文件时写的释放标记,与 `notify.ts` 的调度锁同一套降级语义 */
+const LOCK_RELEASED = "released";
+
+/**
+ * 同一数据目录只让一个进程采(开了两个后台时,否则两边各采一份、异动会记两遍)。
+ * 拿不到就等到下一拍再看;持有者进程崩了,锁文件超过 90 秒没动就抢过来。
+ */
+function ensureLock(dataRoot: string, token: string): CollectorLock | null {
+  const file = path.join(dataRoot, "shortline", COLLECTOR_LOCK);
+  const read = (): string | null => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
+  const mine = () => read() === token;
+  /** 空文件 / 释放标记 = 没主;`pid:token` 一律当活锁,不许覆盖 */
+  const unowned = (s: string | null) => s === null || s.trim() === "" || s === LOCK_RELEASED;
+  const stale = (): boolean => {
+    let age = 0;
+    try { age = Date.now() - fs.statSync(file).mtimeMs; } catch { age = 0; }
+    return age >= LOCK_STALE_MS;
+  };
+  /** 文件不存在时走 `wx` 严格互斥(先到者胜);无主 / 死锁时直接覆盖,不靠 rmSync —— 删不掉也可能被环境策略拦 */
+  const write = (exclusive: boolean): boolean => {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, token, { flag: exclusive ? "wx" : "w", mode: 0o600 });
+      return mine();
+    } catch { return false; }
+  };
+  const release = () => {
+    if (!mine()) return;                      // 不是自己的锁,一个字都不碰
+    try { fs.rmSync(file, { force: true }); return; }
+    catch (e) {
+      try { fs.writeFileSync(file, LOCK_RELEASED, { mode: 0o600 }); }
+      catch { console.error(`[collector] 锁文件既删不掉也写不进,只能等超时判死:${file}`); return; }
+      console.error(`[collector] 锁文件删不掉,已标记为释放(${e instanceof Error ? e.message : String(e)}):${file}`);
+    }
+  };
+  const peek = (): CollectorLock => ({
+    mine,
+    touch: () => { try { if (mine()) { const t = new Date(); fs.utimesSync(file, t, t); } } catch { /* 下一拍重抢 */ } },
+    release,
+  });
+  if (mine()) return peek();
+  const held = read();
+  if (held === null) return write(true) ? peek() : null;
+  if (unowned(held) || stale()) return write(false) ? peek() : null;
+  return null;
+}
+
+export interface CollectorDeps extends PollDeps {
+  log?: (line: string) => void;
+  /** 第一拍等多久(进程刚起来,先让别的启动项占住) */
+  firstDelayMs?: number;
+  /** 测试用:换掉每拍间隔的计算。返回 0 表示按「不在采集窗口」处理 */
+  sleepMs?: (phase: Phase) => number;
+}
+
+let collectorTimer: NodeJS.Timeout | null = null;
+let collectorStopFn: (() => void) | null = null;
+
+/**
+ * 盘中常驻采集:**不依赖任何页面**。进程一起来就挂着,连续竞价每 3 秒一拍,
+ * 取行情 → 和上几次比 → 有异动就追加写盘。页面只是消费者。
+ *
+ * 不重复:和页面请求共用 `pollShared`(在途共用一份、2.5 秒内不重算),
+ * 跨进程用 `collector.lock` 只让一个进程采。失败按 3→6→…→60 秒退避,同样的原因不重复刷屏。
+ * 入口在 `api.ts` 的 main;`VRA_ALERT_COLLECTOR=off` 可关。
+ */
+export function startAlertCollector(ctx: ServiceContext, deps: CollectorDeps = {}): () => void {
+  if (collectorTimer) return () => undefined;
+  const clock = deps.clock ?? (() => new Date());
+  const log = deps.log ?? ((line: string) => console.error(line));
+  const token = `${process.pid}:${Date.now()}`;
+  let stopped = false;
+  let fails = 0;
+  let noted = "";
+  let lock: CollectorLock | null = null;
+
+  const arm = (ms: number) => {
+    if (stopped) return;
+    collectorTimer = setTimeout(() => { void tick(); }, ms);
+    collectorTimer.unref?.();
+  };
+
+  const tick = async (): Promise<void> => {
+    collectorTimer = null;
+    if (stopped) return;
+    try {
+      const now = clock();
+      const phase = phaseOf(now);
+      const sleep = (deps.sleepMs ?? collectorSleepMs)(phase);
+      // 不在采集窗口:连锁都不碰,直接睡到下一个开盘窗口。
+      // (挂着锁睡十几个小时会被别的进程当成死锁抢走,两边反复抢没有意义)
+      if (!sleep) { arm(sleepUntilOpen(now)); return; }
+      const l = ensureLock(ctx.dataRoot, token);
+      if (!l) { arm(5_000); return; }        // 另一个进程在采,让它采,五秒后再看
+      lock = l;
+      const st = stateFor(ctx, clockOf(now).day);
+      const v = await pollShared(ctx, st, { fetch: deps.fetch, clock });
+      fails = 0;
+      noted = "";
+      l.touch();
+      arm(v.trading_day === false ? 60_000 : sleep);   // 今天休市就别 3 秒一拍空转
+    } catch (e) {
+      fails += 1;
+      const why = e instanceof Error ? e.message : String(e);
+      if (why !== noted && (fails <= 2 || fails % 30 === 0)) { noted = why; log(`[collector] 这一拍没采到:${why}`); }
+      arm(Math.min(POLL_MS * 2 ** Math.min(fails, 5), 60_000));
+    }
+  };
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (collectorTimer) { clearTimeout(collectorTimer); collectorTimer = null; }
+    try { lock?.release(); } catch { /* 已经没了 */ }
+    lock = null;
+    collectorStopFn = null;
+  };
+  collectorStopFn = stop;
+  arm(deps.firstDelayMs ?? 800);
+  log(`[collector] 盘中常驻采集已启动(连续竞价每 ${POLL_MS / 1_000} 秒一拍,页面关掉也照采)`);
+  return stop;
 }

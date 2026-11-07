@@ -50,3 +50,23 @@ test("no-bytecode / no-user-site policy survives fetch, research and local-agent
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("取数子进程按 UTF-8 交回输出:中文标题不会变成替换符(Windows 上曾经整段乱码)", () => {
+  // 真实启动环境是 `scripts/start.ps1` 起的 PowerShell,**没有** PYTHONUTF8 / PYTHONIOENCODING。
+  // 取数子进程的环境是白名单挑的(FETCH_ENV_KEYS),父进程带没带都不该决定结果 —— 必须在这里写死:
+  // Node 侧一律按 utf8 解 stdout(service.runFetchProcess),python 不声明就按 cp936 写,中文全成 U+FFFD 且不可逆。
+  const source = { PATH: process.env.PATH, LANG: "zh_CN.GBK" };
+  const env = fetchEnv({}, source);
+  assert.equal(env.PYTHONUTF8, "1");
+  assert.equal(env.PYTHONIOENCODING, "utf-8");
+  assert.equal(env.LANG, "zh_CN.GBK", "父进程的语言变量照传,不拿它当编码开关");
+
+  const python = process.env.VRA_PYTHON || "python3";
+  const title = "股票交易异常波动公告";
+  // ① 子进程真的收到了这两项(不是只在对象里躺着)
+  assert.equal(execFileSync(python, ["-c", "import os;print(os.environ['PYTHONIOENCODING'])"], { env, encoding: "utf8" }).trim(), "utf-8");
+  // ② 中文按 UTF-8 交回来,一个替换符都没有
+  const out = execFileSync(python, ["-c", `import sys;sys.stdout.write(${JSON.stringify(title)})`], { env, encoding: "utf8" });
+  assert.equal(out, title);
+  assert.equal(out.includes("\ufffd"), false);
+});

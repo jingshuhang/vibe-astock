@@ -28,7 +28,11 @@ export function subscriptionConfig(provider: string): LlmConfig {
 interface ConnectionActions {
   read: () => string | null;
   probe: (config: LlmConfig, signal?: AbortSignal) => Promise<{ ok: true }>;
-  save: (config: LlmConfig) => void;
+  /**
+   * 保存。**可以返回 Promise**（`saveLlmEverywhere` 要再同步一份给后端定时任务用）——
+   * 它抛错就说明"页面存了、后台那份没存下"，这句话必须原样传到界面上。
+   */
+  save: (config: LlmConfig) => void | Promise<void>;
 }
 
 /** Settings and home share the same probe-before-save contract. Never overwrite a newer choice. */
@@ -39,5 +43,5 @@ export async function testAndSaveAi(config: LlmConfig, actions: ConnectionAction
   signal?.throwIfAborted();
   if (probe.ok !== true) throw new Error("连接测试未成功，请重试");
   if (actions.read() !== previous) throw new Error("AI 接入配置已在其他页面更改，请重新确认当前选择");
-  actions.save(config);
+  await actions.save(config);
 }

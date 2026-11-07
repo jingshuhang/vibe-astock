@@ -3,10 +3,11 @@ import { RefreshCw, AlertCircle, ShieldCheck, ShieldAlert, ShieldX } from "lucid
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { backend, ApiError } from "@/lib/backend";
+import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { cn } from "@/lib/utils";
 import type { MarketStateResult, Dimension } from "@/lib/marketState";
-import { RISK_LEVEL_META, PHASE_COLORS, weightPct } from "@/lib/marketState";
+import { DIMENSION_LABELS, RISK_LEVEL_META, PHASE_COLORS, weightPct } from "@/lib/marketState";
 /** 四档徽标配色 / 触发比较符 / 读数行:统一在 lib/marketCall,与每日复盘页共用一份 */
 import { CALL_COLORS, OP_LABEL, METRIC_LABEL, readingsText, type MarketCallView } from "@/lib/marketCall";
 
@@ -16,6 +17,7 @@ export function ScoreRing({
   value,
   color,
   label,
+  hint,
   weight,
   asOf,
   stale,
@@ -23,6 +25,8 @@ export function ScoreRing({
   value: number | null;
   color: string;
   label: string;
+  /** 这一维「分高」是什么意思（五维同向：越高越正面）。不写就不渲染，别留一行空白 */
+  hint?: string;
   /** 这一维的实际权重（0..1）。显示的是**生效**权重，不是名义权重 */
   weight?: number | null;
   /** 数据是哪一天的 */
@@ -51,10 +55,11 @@ export function ScoreRing({
           </span>
         </div>
       </div>
-      <span className="text-[11px] text-muted-foreground text-center leading-tight">
+      <span className="text-[11px] text-foreground text-center leading-tight">
         {label}
-        <span className="tabular-nums"> ({weightPct(weight)})</span>
+        <span className="tabular-nums text-muted-foreground"> ({weightPct(weight)})</span>
       </span>
+      {hint && <span className="text-[11px] text-muted-foreground text-center leading-tight">{hint}</span>}
       {/* 只有陈旧时才渲染这一行 —— 否则空 span 会在每张卡下面留一行白 */}
       {stale && asOf && (
         <span className="text-[10px] leading-none text-warning">{asOf} 旧数据</span>
@@ -176,11 +181,11 @@ export function formulaText(dimensions: MarketStateResult["dimensions"]): string
   const push = (name: string, d: Dimension) => {
     if (d.weight != null && d.weight > 0) items.push(`${name}×${d.weight.toFixed(2)}`);
   };
-  push("情绪", dimensions.emotion);
-  push("龙头", dimensions.dragon);
-  push("风险", dimensions.risk);
-  push("赚钱效应", dimensions.earning);
-  push("事件", dimensions.event);
+  push(DIMENSION_LABELS.emotion.label, dimensions.emotion);
+  push(DIMENSION_LABELS.dragon.label, dimensions.dragon);
+  push(DIMENSION_LABELS.risk.label, dimensions.risk);
+  push(DIMENSION_LABELS.earning.label, dimensions.earning);
+  push(DIMENSION_LABELS.event.label, dimensions.event);
   const dropped = dimensions.event.weight === 0
     ? "（事件面没算出来，权重已让渡给其余四项）"
     : (dimensions.event.weight ?? 0) > 0 && (dimensions.event.weight ?? 0) < 0.15
@@ -354,6 +359,8 @@ export function MarketState() {
   const [call, setCall] = useState<MarketCallView | null>(null);
   const [callError, setCallError] = useState("");
   const seq = useRef(0);
+  /** 最近一次**取完数**的时刻（不是发请求的时刻）—— 自动刷新据此判断要不要补刷 */
+  const loadedAt = useRef<number | null>(null);
 
   const load = useCallback(async (refresh: boolean) => {
     const my = ++seq.current;
@@ -361,7 +368,9 @@ export function MarketState() {
     setError("");
     try {
       const r = await backend.marketState({ refresh });
-      if (my === seq.current) { setData(r); setError(""); }
+      // 只有**真的拿到数据**才算「取完了」：失败也记时刻的话，一次挂掉的请求会把
+      // 「切回前台补刷」压住两分钟，而这恰恰是最该重试的时候。
+      if (my === seq.current) { setData(r); setError(""); loadedAt.current = Date.now(); }
     } catch (e) {
       if (my === seq.current) setError(e instanceof ApiError || e instanceof Error ? e.message : String(e));
     } finally {
@@ -370,6 +379,12 @@ export function MarketState() {
   }, []);
 
   useEffect(() => { void load(false); }, [load]);
+
+  /**
+   * 这一页原来**根本没有定时器**，只有「重新取数」按钮 —— 用户盯着一个不会自己更新的
+   * 「市场状态信号」。交易时段每 2 分钟取一次，切回前台时若已过期立刻补。
+   */
+  useMarketAutoRefresh({ onTick: () => { void load(false); }, loadedAt: loadedAt.current });
 
   // 大盘判断台账独立取数:失败只降级卡片文案,不挡市场状态主视图
   useEffect(() => {
@@ -398,7 +413,7 @@ export function MarketState() {
         + `\n`
         + `风险等级: ${data.signal.risk_level ? RISK_LEVEL_META[data.signal.risk_level].label : "未知"}\n`
         + `可开新仓: ${data.signal.can_open_position === null ? "不知道" : data.signal.can_open_position ? "是" : "否"} · 仓位上限: ${data.signal.position_cap_pct === null ? "未设" : `${data.signal.position_cap_pct}%`}\n`
-        + `五维评分: 情绪${data.dimensions.emotion.score ?? "—"}(权重${weightPct(data.dimensions.emotion.weight)}) 龙头${data.dimensions.dragon.score ?? "—"}(${weightPct(data.dimensions.dragon.weight)}) 风险${data.dimensions.risk.score ?? "—"}(${weightPct(data.dimensions.risk.weight)}) 赚钱效应${data.dimensions.earning.score ?? "—"}(${weightPct(data.dimensions.earning.weight)}) 事件${data.dimensions.event.score ?? "未算出"}(${weightPct(data.dimensions.event.weight)})\n`
+        + `五维评分(0–100,分越高越正面;抗跌度原名「风险」,量的是安全度,分低=危险): 情绪${data.dimensions.emotion.score ?? "—"}(权重${weightPct(data.dimensions.emotion.weight)}) 龙头${data.dimensions.dragon.score ?? "—"}(${weightPct(data.dimensions.dragon.weight)}) 抗跌度${data.dimensions.risk.score ?? "—"}(${weightPct(data.dimensions.risk.weight)}) 赚钱效应${data.dimensions.earning.score ?? "—"}(${weightPct(data.dimensions.earning.weight)}) 事件${data.dimensions.event.score ?? "未算出"}(${weightPct(data.dimensions.event.weight)})\n`
         + (data.signal.event_detail
           ? `事件面口径: 央视《新闻联播》${data.signal.event_detail.date ?? ""} 期 ${data.signal.event_detail.items} 条，命中宏观政策 ${data.signal.event_detail.macro_hits} 条(利多词 ${data.signal.event_detail.bullish} / 利空词 ${data.signal.event_detail.bearish})。这是标题词频代理指标，不是宏观结论，权重封顶 8%，不要用它单独推仓位。\n`
           : `事件面: 没取到当期《新闻联播》，该维度没算出来(权重已让渡)，不是 50 分。\n`)
@@ -475,15 +490,16 @@ export function MarketState() {
         {/* 五维评分 */}
         <GlassCard>
           <h2 className="mb-1 text-sm font-semibold">五维评分明细</h2>
+          <p className="mb-1 text-[11px] text-muted-foreground">五维都是 0–100 分，<b className="font-medium text-foreground">分越高越正面</b>；环下那行写的是高分那一端的意思。「抗跌度」原名「风险」，量的是安全度 —— 分低才是危险。</p>
           <p className="mb-4 text-[11px] text-muted-foreground">括号里是实际生效权重：某一维没数据时，它的权重会让渡给其余维度；事件面另外设 8% 封顶（名义 0.15）。</p>
           <div className="grid grid-cols-5 gap-4">
-            <ScoreRing value={dimensions.emotion.score} color="#6366f1" label="情绪" weight={dimensions.emotion.weight} asOf={dimensions.emotion.as_of} stale={staleSet.has("emotion")} />
-            <ScoreRing value={dimensions.dragon.score} color="#f59e0b" label="龙头" weight={dimensions.dragon.weight} asOf={dimensions.dragon.as_of} stale={staleSet.has("dragon")} />
-            <ScoreRing value={dimensions.risk.score} color="#22c55e" label="风险" weight={dimensions.risk.weight} asOf={dimensions.risk.as_of} stale={staleSet.has("risk")} />
-            <ScoreRing value={dimensions.earning.score} color="#3b82f6" label="赚钱效应" weight={dimensions.earning.weight} asOf={dimensions.earning.as_of} stale={staleSet.has("earning")} />
+            <ScoreRing value={dimensions.emotion.score} color="#6366f1" label={DIMENSION_LABELS.emotion.label} hint={DIMENSION_LABELS.emotion.hint} weight={dimensions.emotion.weight} asOf={dimensions.emotion.as_of} stale={staleSet.has("emotion")} />
+            <ScoreRing value={dimensions.dragon.score} color="#f59e0b" label={DIMENSION_LABELS.dragon.label} hint={DIMENSION_LABELS.dragon.hint} weight={dimensions.dragon.weight} asOf={dimensions.dragon.as_of} stale={staleSet.has("dragon")} />
+            <ScoreRing value={dimensions.risk.score} color="#22c55e" label={DIMENSION_LABELS.risk.label} hint={DIMENSION_LABELS.risk.hint} weight={dimensions.risk.weight} asOf={dimensions.risk.as_of} stale={staleSet.has("risk")} />
+            <ScoreRing value={dimensions.earning.score} color="#3b82f6" label={DIMENSION_LABELS.earning.label} hint={DIMENSION_LABELS.earning.hint} weight={dimensions.earning.weight} asOf={dimensions.earning.as_of} stale={staleSet.has("earning")} />
             {/* 事件环用后端自己的 stale：它按「播出日期 + 允许滞后 1 天」判定，
                 不用 stale_dimensions（那是按取数时间算的，会把每晚都正常滞后的一期标成灰） */}
-            <ScoreRing value={dimensions.event.score} color="#8b5cf6" label="事件" weight={dimensions.event.weight} asOf={dimensions.event.as_of} stale={dimensions.event.stale ?? staleSet.has("event")} />
+            <ScoreRing value={dimensions.event.score} color="#8b5cf6" label={DIMENSION_LABELS.event.label} hint={DIMENSION_LABELS.event.hint} weight={dimensions.event.weight} asOf={dimensions.event.as_of} stale={dimensions.event.stale ?? staleSet.has("event")} />
           </div>
           <p className="mt-3 text-[11px] text-muted-foreground">{formulaText(dimensions)}</p>
           {(signal.stale_dimensions?.length ?? 0) > 0 && (

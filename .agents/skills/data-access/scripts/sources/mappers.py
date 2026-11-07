@@ -161,6 +161,32 @@ def empty(reason: str) -> dict:
     return out([], status="failed", reason=reason)
 
 
+def no_data(ctx: dict, field: str, unit: str, period: str, reason: str, *, value: Any = 0, note: Optional[str] = None) -> dict:
+    """上游没给数据时,不把「占位 0」留成快照。
+
+    这类结果仍可能给界面展示「0 + 说明」,但必须同时带:
+      - `missing`:那个字段其实没取到,不是真值 0;
+      - `extra.placeholder_zero` / `extra.no_cache`:让 `keepableForSnapshot()` 明确拒存。
+    否则一次盘前 / 非交易日空响应会被写进 `.local/snapshots`,下次打开就把缺口读成 0。
+    """
+    return out(
+        [ev(ctx, field, value, unit, period, currency="n/a", note=note)],
+        extra={"no_cache": True, "placeholder_zero": True},
+        missing=[{"field": field, "period": period, "reason": reason}],
+        status="partial",
+        degraded=reason,
+    )
+
+
+def breadth_missing_field(note: str) -> str:
+    """涨跌分布的缺口按性质归字段,不再把所有 note 都塞进 `market_up_count`。"""
+    if "分布" in note:
+        return "market_dist_count"
+    if "三所" in note or "家数" in note or "成交额" in note:
+        return "market_up_count"
+    return "market_breadth"
+
+
 # =====================================================================
 # 东财(eastmoney)端点
 # =====================================================================
@@ -306,7 +332,8 @@ def em_daily_dragon_tiger(result: dict, ctx: dict) -> dict:
     stocks = (result or {}).get("stocks") or []
     day = (result or {}).get("date") or today_str()
     if not stocks:
-        return out([ev(ctx, "dragon_tiger_market_count", 0, "条", day, currency="n/a", note=(result or {}).get("note", ""))], status="partial", degraded="无龙虎榜数据(非交易日或盘后未更新)")
+        return no_data(ctx, "dragon_tiger_market_count", "条", day,
+                       "无龙虎榜数据(非交易日或盘后未更新)", note=(result or {}).get("note", ""))
     limit = max(1, int(ctx["args"].get("limit", 100)))
     picked, note = stocks, None
     if len(stocks) > limit:
@@ -430,7 +457,9 @@ def em_zt_pools(result: list, ctx: dict) -> dict:
         # 🔴 交易日不可能没有涨停 ⇒ 涨停池 / 昨日涨停池为空只能是超出东财约一个月的保留期,不写成 0 只
         if prefix in ("limit_up_pool", "yesterday_limit_up_pool"):
             return empty(f"{period} 的池子是空的(超出东财约一个月的保留期,或不是交易日);不当成 0 只")
-        return out([ev(ctx, f"{prefix}_count", 0, "只", period, currency="n/a", note="池为空(当日无;也可能超出东财约一个月的保留期)")], status="partial", degraded="池为空")
+        return no_data(ctx, f"{prefix}_count", "只", period,
+                       "池为空(当日无;也可能超出东财约一个月的保留期)",
+                       note="池为空(当日无;也可能超出东财约一个月的保留期)")
     evs = [ev(ctx, f"{prefix}_count", len(result), "只", period, currency="n/a")]
     # 🔴 逐只明细默认放全(上限 1000)。原来默认 150:行情火热的日子涨停两三百只,复盘页拿今天涨停池和昨日涨停池
     #    对"谁晋级了",被截掉的那些会被算成"没晋级",数字偏低还不报错。真被截了就标 partial 说出来。
@@ -501,7 +530,7 @@ def em_hot_rank(result: list, ctx: dict) -> dict:
 def em_hot_concept(result: list, ctx: dict) -> dict:
     day = today_str()
     if not result:
-        return out([ev(ctx, "hot_concept_count", 0, "个", day, currency="n/a")], status="partial", degraded="当前无热门概念命中")
+        return no_data(ctx, "hot_concept_count", "个", day, "当前无热门概念命中")
     evs = [ev(ctx, "hot_concept_count", len(result), "个", day, currency="n/a")]
     evs += rows_fields(ctx, result, [("hit", "hot_concept_hit", "热度")], period_of=lambda r: day, key_of=lambda r: str(r.get("bk")), note_of=lambda r: f"概念={r.get('concept')}")
     return out(evs, extra={"concepts": [r.get("concept") for r in result]})
@@ -511,7 +540,8 @@ def em_hot_concept(result: list, ctx: dict) -> dict:
 def ths_hot_reason(result: list, ctx: dict) -> dict:
     date = str(ctx["args"].get("date") or today_str())
     if not result:
-        return out([ev(ctx, "strong_stock_count", 0, "只", date, currency="n/a", note="当日无强势股(非交易日 / 盘前)")], status="partial", degraded="无数据")
+        return no_data(ctx, "strong_stock_count", "只", date, "无数据",
+                       note="当日无强势股(非交易日 / 盘前)")
     evs = [ev(ctx, "strong_stock_count", len(result), "只", date, currency="n/a")]
     for r in result[:int(ctx["args"].get("limit", 150))]:
         code = str(r.get("code", ""))
@@ -538,7 +568,8 @@ def ths_hsgt_realtime(result: dict, ctx: dict) -> dict:
     sgt = [x for x in (result or {}).get("sgt") or [] if x is not None]
     day = today_str()
     if not times or not (hgt or sgt):
-        return out([ev(ctx, "northbound_points", len(times), "个", day, currency="n/a", note="无北向分钟数据(非交易时段或源停更)")], status="partial", degraded="无数据")
+        return no_data(ctx, "northbound_points", "个", day, "无数据",
+                       value=len(times), note="无北向分钟数据(非交易时段或源停更)")
     evs = [ev(ctx, "northbound_points", len(times), "个", day, currency="n/a", note=f"{times[0]}..{times[-1]}")]
     if hgt:
         evs.append(ev(ctx, "hgt_net_buy_cum", to_float(hgt[-1]), "亿元", day, note=f"沪股通累计净买入至 {times[len(hgt) - 1] if len(hgt) <= len(times) else times[-1]}"))
@@ -551,7 +582,7 @@ def ths_limit_up_pool(result: list, ctx: dict) -> dict:
     date = str(ctx["args"].get("date") or today_str().replace("-", ""))
     period = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date
     if not result:
-        return out([ev(ctx, "ths_limit_up_count", 0, "只", period, currency="n/a")], status="partial", degraded="涨停揭秘为空(非交易日 / 盘前)")
+        return no_data(ctx, "ths_limit_up_count", "只", period, "涨停揭秘为空(非交易日 / 盘前)")
     evs = [ev(ctx, "ths_limit_up_count", len(result), "只", period, currency="n/a")]
     evs += rows_fields(ctx, result, [("pct", "pool_change_pct", "%"), ("seal_rate", "seal_success_rate", "小数"), ("break_times", "pool_break_times", "次"), ("seal_amount", "seal_order_amount", "元")],
                        period_of=lambda r: period, key_of=lambda r: str(r.get("code")), note_of=lambda r: f"{r.get('code')} {r.get('name')} {r.get('high_days','')} {r.get('board_type','')} 首封 {r.get('first_time','')} 原因={str(r.get('reason',''))[:80]}",
@@ -613,7 +644,11 @@ def em_market_breadth_map(result: dict, ctx: dict) -> dict:
     day = (result or {}).get("date") or today_str()   # 取数层已按交易日历补过;还是空就只能标取数当天,notes 里写明了
     buckets = (result or {}).get("buckets") or []
     exchanges = (result or {}).get("exchanges") or []
-    evs = [ev(ctx, "market_dist_count", b["count"], "只", day, currency="n/a", as_of=day, record_key=f"dist|{b['key']}", note=b["label"], raw_ref=b.get("_raw"))
+    notes = list((result or {}).get("notes") or [])
+    dist_sources = {str(b.get("source") or "eastmoney") for b in buckets}
+    evs = [ev(ctx, "market_dist_count", b["count"], "只", day, currency="n/a", as_of=day,
+              record_key=f"dist|{b['key']}", note=b["label"], raw_ref=b.get("_raw"),
+              source=b.get("source") or "eastmoney")
            for b in buckets]
     for x in exchanges:
         rk = f"exchange|{x['market']}"
@@ -622,15 +657,18 @@ def em_market_breadth_map(result: dict, ctx: dict) -> dict:
         for key, field, unit in (("up", "market_up_count", "只"), ("down", "market_down_count", "只"), ("flat", "market_flat_count", "只"), ("amount", "market_turnover_amount", "元")):
             if x.get(key) is not None:
                 evs.append(ev(ctx, field, x[key], unit, day, as_of=day, record_key=rk, note=note, raw_ref=x.get("_raw"), source=src))
-    missing = [{"field": "market_up_count", "period": day, "reason": n} for n in (result or {}).get("notes") or []]
+    missing = [{"field": breadth_missing_field(n), "period": day, "reason": n} for n in notes]
     if not buckets:
         missing.append({"field": "market_dist_count", "period": day, "reason": "涨跌分布没取到"})
-    if len(exchanges) < 3 and not (result or {}).get("notes"):
+    if len(exchanges) < 3 and not notes:
         got = {x["market"] for x in exchanges}
         missing += [{"field": "market_up_count", "period": day, "reason": f"{m} 的家数与成交额没取到"} for m in ("SH", "SZ", "BJ") if m not in got]
     if not evs:
         return empty("涨跌分布与三所家数都没取到")
-    return out(evs, missing=missing, status="partial" if missing else None, extra={"date": day, "bucket_total": sum(b["count"] for b in buckets)})
+    return out(evs, missing=missing, status="partial" if missing else None,
+               degraded="；".join(notes) or None,
+               extra={"date": day, "bucket_total": sum(b["count"] for b in buckets),
+                      "distribution_sources": sorted(dist_sources), "notes": notes})
 
 
 def _now_sh():

@@ -89,6 +89,15 @@ export interface Breadth {
   upShare: number | null;
   label: string;
   exchanges: ExchangeBreadth[];
+  /**
+   * 三所家数整块没取到（东财指数行情那一路断）。
+   *
+   * 🔴 不能拿涨跌分布合起来顶替：两套口径本来就不同 ——
+   *    实测 2026-11-06 分布合计 5379 只、三所合计 5650 只（差约 5%），
+   *    端点说明里也写明「分布合计与三所家数合计口径不同，不互相凑」。
+   *    所以这里只把缺口说出来，页面别拿「—」冒充 0，也别伪造一份合计。
+   */
+  exchangesMissing: boolean;
   /** 沪深京三所成交额合计(元);任一所没取到就不合计 */
   amount: number | null;
 }
@@ -126,6 +135,8 @@ export function parseBreadth(env: Envelope | undefined): Breadth | null {
     upShare,
     label: breadthLabel(up, down),
     exchanges,
+    // 三家全空才算整块没取到；只缺一家时那一家显示「—」就够，不必整块报缺口
+    exchangesMissing: exchanges.every((x) => x.up === null && x.down === null),
     amount: sum(exchanges.map((x) => x.amount)),
   };
 }

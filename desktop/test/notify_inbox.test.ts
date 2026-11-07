@@ -12,6 +12,8 @@ test("任务状态文案:运行中优先,没跑过与今天不运行分开", () 
   assert.deepEqual(jobStatusLabel({ status: "failed", running: false }), { text: "失败", tone: "bad" });
   assert.deepEqual(jobStatusLabel({ status: "blocked", running: false }), { text: "等待中", tone: "warn" });
   assert.deepEqual(jobStatusLabel({ status: "skipped", running: false }), { text: "今天不运行", tone: "muted" });
+  // 跑完了但有缺口:不能和「已运行」混成一个样子,否则缺的几天没人看得见
+  assert.deepEqual(jobStatusLabel({ status: "partial", running: false }), { text: "已运行(有缺口)", tone: "warn" });
   assert.deepEqual(jobStatusLabel({ status: null, running: false }), { text: "还没运行过", tone: "muted" });
 });
 

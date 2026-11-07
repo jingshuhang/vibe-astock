@@ -5,7 +5,8 @@
  */
 
 export type CallTier = "加仓" | "持有" | "减仓" | "观望";
-export type CallDirection = "偏多" | "中性" | "偏空";
+/** 五档：全景档会写「中性偏多 / 中性偏空」，不是只有偏多/中性/偏空三个值 */
+export type CallDirection = "偏多" | "中性偏多" | "中性" | "中性偏空" | "偏空";
 /** 结构化触发条件的读数;trigger_op: above=≥ / below=≤ */
 export type TriggerMetric = "breadth_pct" | "limit_up" | "limit_down" | "amount_yi";
 

@@ -13,6 +13,7 @@ import type {
 import { IGNITION_META, ALLOWANCE_META, ROLE_META, seriesMax } from "@/lib/opportunity";
 import type { MarketStateResult } from "@/lib/marketState";
 import { isMarketTrading } from "@/lib/marketSymbol";
+import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 
 /**
  * 机会发现（盘中判断用）。
@@ -27,7 +28,7 @@ const BTN = "inline-flex items-center gap-1.5 rounded-lg border border-border/60
 const BTN_ON = "inline-flex items-center gap-1.5 rounded-lg border border-info/40 bg-info/10 px-3 py-1.5 text-[14px] text-info";
 
 /** 盘中自动刷新间隔：涨停/炸板是分钟级变化，2 分钟够；再快就是在重复拉同一份数据 */
-const REFRESH_MS = 120_000;
+// 刷新间隔与「切回前台补刷」都在 useMarketAutoRefresh 里（三页共用一份，别在这里再写一遍）
 
 const upDown = (v: number | null | undefined) =>
   v == null ? "text-muted-foreground" : v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground";
@@ -90,47 +91,57 @@ function Delta({ v, unit = "", digits = 0 }: { v: number | null | undefined; uni
  * 联动结论：**只显示当前这一格**。
  *
  * 两个轴都是本页已有的信号：
- *   纵轴 = 市场给不给做（`can_open_position`，闸门算出来的，不是猜的）
+ *   纵轴 = 能不能开新仓（`can_open_position` = 仓位上限 ≥ 40% 且非极高风险）
  *   横轴 = 板块有没有成规模的启动（≥3 只涨停且有高度的题材）
  *
+ * 🔴 纵轴叫「可开新仓 / 暂不开新仓」，**不叫「闸门开 / 未开」** —— 2026-11-06 用户看到
+ *    「上证 > MA20 未过」和「闸门开」同屏，直接问这是不是矛盾。不矛盾，但词用错了：
+ *    同一个页面里「闸门」另有所指（上面那排灯 = `gate.all_pass`，三道门全过）。
+ *    一票未过时上限被压到 40%，而「能开仓」的门槛也是 40%，于是恰好判成「能开」——
+ *    两套判据共用一个词，屏幕上就成了自相矛盾。现在与「市场状态」页统一叫「可开新仓」，
+ *    并把上限数字摆在坐标里，让「能开、但只能轻仓」这件事一眼看得出来。
+ *
  * 🔴 四格全摆出来是「查表」，盘中要的是「现在这一句」—— 摆四格还把字号挤没了。
- *    所以只留当前格，坐标用一行小字交代（闸门开/未开 × 题材有/没规模），判据不丢。
- * 🔴 `known === false` 时不给任何一格：null 是「不知道」，不是「闸门没开」。
+ *    所以只留当前格，坐标用一行小字交代（可开新仓/暂不开 × 题材有/没规模），判据不丢。
+ * 🔴 `known === false` 时不给任何一格：null 是「不知道」，不是「暂不开新仓」。
  */
 const JOINT_CELLS = {
   "on-on": {
     title: "顺势做",
-    body: "闸门开着、板块也有规模 —— 按仓位上限分配到具体题材与龙头。",
+    body: "可开新仓、板块也有规模 —— 按仓位上限分配到具体题材与龙头。",
     tone: "border-info/50 bg-info/[0.08]",
     ink: "text-info",
   },
   "on-off": {
     title: "只有指数在涨",
-    body: "闸门开着，但没有题材成规模 —— 别在个股上追，等题材接力。",
+    body: "可开新仓，但没有题材成规模 —— 别在个股上追，等题材接力。",
     tone: "border-warning/45 bg-warning/[0.07]",
     ink: "text-warning",
   },
   "off-on": {
     title: "逆势启动",
-    body: "闸门没开，但局部有题材 —— 先当反抽看，只观察第一波、不参与。",
+    body: "暂不开新仓，但局部有题材 —— 先当反抽看，只观察第一波、不参与。",
     tone: "border-warning/45 bg-warning/[0.07]",
     ink: "text-warning",
   },
   "off-off": {
     title: "空档",
-    body: "闸门没开、板块也没起来 —— 今天不动，是最省钱的判断。",
+    body: "暂不开新仓、板块也没起来 —— 今天不动，是最省钱的判断。",
     tone: "border-border/60 bg-muted/[0.12]",
     ink: "text-muted-foreground",
   },
 } as const;
 
-function JointVerdict({ offense, hasSector, phase, known }: {
+function JointVerdict({ offense, hasSector, phase, known, cap }: {
   offense: boolean; hasSector: boolean; phase: string | null; known: boolean;
+  /** 仓位上限（%）—— 摆在坐标里，免得「可开新仓」被读成「可以随便买」 */
+  cap: number | null;
 }) {
   const key = !known ? null
     : offense ? (hasSector ? "on-on" : "on-off")
       : (hasSector ? "off-on" : "off-off");
   const cell = key ? JOINT_CELLS[key] : null;
+  const openLabel = offense ? `可开新仓${cap != null ? `（上限 ${cap}%）` : ""}` : "暂不开新仓";
 
   return (
     <div className="flex h-full flex-col">
@@ -139,12 +150,12 @@ function JointVerdict({ offense, hasSector, phase, known }: {
       </h3>
       {cell ? (
         <div
-          title={"四种情形：\n顺势做 = 闸门开 + 题材有规模\n只有指数在涨 = 闸门开 + 题材没规模\n逆势启动 = 闸门未开 + 题材有规模\n空档 = 闸门未开 + 题材没规模"}
+          title={"四种情形：\n顺势做 = 可开新仓 + 题材有规模\n只有指数在涨 = 可开新仓 + 题材没规模\n逆势启动 = 暂不开新仓 + 题材有规模\n空档 = 暂不开新仓 + 题材没规模"}
           className={cn("flex flex-1 flex-col justify-center rounded-lg border px-4 py-4", cell.tone)}>
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className={cn("text-[22px] font-semibold leading-tight", cell.ink)}>{cell.title}</span>
             <span className="text-[13px] tabular-nums text-muted-foreground">
-              闸门{offense ? "开" : "未开"} × 题材{hasSector ? "有规模" : "没规模"}
+              {openLabel} × 题材{hasSector ? "有规模" : "没规模"}
             </span>
           </div>
           <p className="mt-2 text-[16px] leading-relaxed text-foreground/80">{cell.body}</p>
@@ -153,7 +164,7 @@ function JointVerdict({ offense, hasSector, phase, known }: {
         <div className="flex flex-1 flex-col justify-center rounded-lg border border-border/60 bg-muted/[0.1] px-4 py-4">
           <span className="text-[22px] font-semibold leading-tight text-warning">判断不了</span>
           <p className="mt-2 text-[16px] leading-relaxed text-foreground/80">
-            市场状态没算出来 —— 没有闸门结论就谈不上联动，此时一律只观察。
+            市场状态没算出来 —— 没有仓位结论就谈不上联动，此时一律只观察。
           </p>
         </div>
       )}
@@ -280,7 +291,7 @@ function DecisionPanel({ chain, mkt, delta, staleNote }: {
           )}
         </div>
 
-        <JointVerdict offense={offense} hasSector={hasSector} phase={phase} known={canOpen != null} />
+        <JointVerdict offense={offense} hasSector={hasSector} phase={phase} known={canOpen != null} cap={cap} />
       </div>
     </GlassCard>
   );
@@ -674,6 +685,12 @@ function Freshness({ at }: { at: number | null }) {
     return () => window.clearInterval(t);
   }, []);
   if (at == null) return null;
+  // 非交易时段不会自动刷新，「387s 前取的」只会一路涨到几千秒，看着像故障。
+  // 这个数字只在盘中才有判断价值（够不够新鲜），盘前改成绝对时刻。
+  if (!isMarketTrading("CN")) {
+    const hm = new Date(at).toLocaleTimeString("en-GB", { timeZone: "Asia/Shanghai", hour12: false }).slice(0, 5);
+    return <span title="本页最近一次取数的时间（非交易时段不自动刷新）">数据 {hm} 取的</span>;
+  }
   const s = Math.max(0, Math.round((Date.now() - at) / 1000));
   return <span title="本页最近一次取数的时间">数据 {s}s 前取的</span>;
 }
@@ -702,6 +719,8 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
   const [auto, setAuto] = useState(true);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const seq = useRef(0);
+  /** 最近一次**跑完整轮**取数的时刻（`fetchedAt` 的 ref 版：给事件回调读，不触发重渲染） */
+  const loadedAt = useRef(0);
   const prevRef = useRef<{ live: LiveEmotion | null; today: Map<string, number>; at: number } | null>(null);
 
   const load = useCallback(async (refresh: boolean) => {
@@ -717,7 +736,12 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
     ]);
     if (my !== seq.current) return;
     setErrors(errs);
-    setFetchedAt(Date.now());
+    // 三源全挂时不许记「刚取过」：那会把屏上的旧数说成新的,还会压住「切回前台补刷」——
+    // 偏偏这时候最该重试。与 MarketState 页同一个口径:只有真拿到数据才算跑完一轮。
+    if (errs.length === 0) {
+      loadedAt.current = Date.now();
+      setFetchedAt(Date.now());
+    }
     setLoading(false);
   }, []);
 
@@ -743,14 +767,16 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
 
   useEffect(() => { void load(false); }, [load]);
 
-  // 盘中自动刷新：只在交易时段跑；非交易时段按钮亮着也不刷，避免对着收盘定格反复拉
-  useEffect(() => {
-    if (!auto) return;
-    const timer = window.setInterval(() => {
-      if (!document.hidden && isMarketTrading("CN")) void load(false);
-    }, REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [auto, load]);
+  /**
+   * 盘中自动刷新：交易时段每 2 分钟一次 + 切回前台若已过期立刻补。
+   * 这两条原来在本文件里手写，`MarketState` / `ShortlineOpportunities` / `TradePlans`
+   * 三页则连定时器都没有 —— 收到 `useMarketAutoRefresh` 一处，四页行为对齐。
+   */
+  useMarketAutoRefresh({
+    enabled: auto,
+    onTick: () => { void load(false); },
+    loadedAt: loadedAt.current,
+  });
 
   useAiPage({
     key: "opportunity",
@@ -803,12 +829,27 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
   const staleDims = mkt?.signal.stale_dimensions ?? [];
   const staleNote = staleDims.length ? `这些维度不是当日数据：${staleDims.join("、")}` : null;
 
+  /**
+   * 🔴 `settled=false` 有两种完全不同的情况：**真的在盘中**，以及**还没开盘**。
+   *    2026-11-06 08:40 实测：盘前这一屏标着「盘中 · 实时」，而内容全是上一交易日收盘的
+   *    （涨停 / 炸板 / 封板率一律「—」，闸门三项是 11-05 的数）—— 等于把昨收冒充成今天实时。
+   *    盘前物理上没有当日数据，所以这里不是「去取实时」，而是**不许自称实时**。
+   */
+  const settledNow = chain?.settled ?? day?.settled ?? null;
+  const preOpen = !trading && minutes < 9 * 60 + 15;
+  const statusChip = settledNow === true
+    ? { text: "已收盘（定格）", cls: "border-border/60" }
+    : trading
+      ? { text: "盘中 · 实时", cls: "border-danger/40 bg-danger/10 text-danger" }
+      : preOpen
+        ? { text: "盘前 · 读数为上一交易日收盘", cls: "border-warning/40 bg-warning/[0.07] text-warning" }
+        : { text: "非交易时段 · 读数为上一交易日收盘", cls: "border-border/60" };
+
   const meta: ReactNode = (
     <>
       <span className="tabular-nums">{chain?.date ?? day?.date} {chain?.clock ?? day?.clock}</span>
-      <span className={cn("rounded-full border px-2 py-[2px]",
-        (chain?.settled ?? day?.settled) ? "border-border/60" : "border-danger/40 bg-danger/10 text-danger")}>
-        {(chain?.settled ?? day?.settled) ? "已收盘（定格）" : "盘中 · 实时"}
+      <span className={cn("rounded-full border px-2 py-[2px]", statusChip.cls)}>
+        {statusChip.text}
       </span>
       {trading && leftMin != null && <span className="text-warning">距本段收盘 {leftMin} 分钟</span>}
       {staleNote && <span className="text-warning">{staleNote}</span>}
@@ -822,9 +863,14 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
   const buttons = (
     <>
       <button type="button" className={auto ? BTN_ON : BTN} onClick={() => setAuto((v) => !v)}
-        title={auto ? "已开启：每 2 分钟自动取一次（仅交易时段）" : "已暂停自动刷新"}>
+        title={auto
+          ? (trading ? "已开启：每 2 分钟自动取一次" : "已开启：开盘（09:15）后每 2 分钟取一次；现在是盘前，没有当日数据可刷")
+          : "已暂停自动刷新"}>
         {auto ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-        {auto ? "自动刷新 开" : "自动刷新 关"}
+        {/* 🔴 只说「开」不够：定时器每 2 分钟都触发，但非交易时段一律跳过 —— 用户看到
+            「自动刷新 开」+「数据 387s 前取的」会以为坏了。2026-11-06 09:02 实测就是这个情形
+            （isMarketTrading 从 09:15 起才为 true）。把「开盘后才生效」写在按钮上。 */}
+        {auto ? (trading ? "自动刷新 开" : "自动刷新 开（开盘后生效）") : "自动刷新 关"}
       </button>
       <button type="button" className={BTN} onClick={() => void load(true)} disabled={loading}>
         <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />{loading ? "取数中…" : "刷新"}

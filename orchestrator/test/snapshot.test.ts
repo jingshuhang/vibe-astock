@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { SNAPSHOT_SCHEMA, listSnapshots, readSnapshot, resetSnapshotMemory, snapshotKey, snapshotUsable, writeSnapshot } from "../src/snapshot.ts";
+import { DEFAULT_CONSISTENCY, DEFAULT_PREFER_CACHE_MAX_AGE_MS, SNAPSHOT_SCHEMA, listSnapshots, readSnapshot, resetSnapshotMemory, snapshotKey, snapshotUsable, writeSnapshot } from "../src/snapshot.ts";
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "vra-snap-"));
 const ok = () => true;
@@ -137,8 +137,11 @@ test("🔴 一致性策略:光有 refresh 布尔不够 —— MCP / 体检会被
   const fresh = { schema: 1, key: "k", endpoint: "e", symbol: "s", fetched_at: new Date().toISOString(), payload: 1 };
   const old = { ...fresh, fetched_at: new Date(Date.now() - 3600_000).toISOString() };
 
-  // prefer_cache 不给上限 = 任意年代都收(界面默认:打开就是上次的)
-  assert.equal(snapshotUsable(old, { mode: "prefer_cache" }), true);
+  // 🔴 prefer_cache 不给上限也不再等于「任意年代都收」:统一落 Core 缺省(2 分钟)
+  assert.equal(snapshotUsable(old, { mode: "prefer_cache" }), false, "1 小时前的快照不许再被判成可用");
+  assert.equal(snapshotUsable(fresh, { mode: "prefer_cache" }), true, "刚取的快照仍命中缓存");
+  assert.equal(DEFAULT_CONSISTENCY.mode, "prefer_cache");
+  assert.equal((DEFAULT_CONSISTENCY as { max_age_ms?: number }).max_age_ms, DEFAULT_PREFER_CACHE_MAX_AGE_MS);
   // 给了上限就按上限
   assert.equal(snapshotUsable(old, { mode: "prefer_cache", max_age_ms: 60_000 }), false);
   assert.equal(snapshotUsable(fresh, { mode: "prefer_cache", max_age_ms: 60_000 }), true);
@@ -191,4 +194,8 @@ test("🔴 partial(退出码 2)只要没 failed、有证据就该留快照 —�
   assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1" }], { no_cache: true })), false, "声明了不缓存就不缓存");
   assert.equal(keepableForSnapshot(mk(0, "ok", [{ id: "e1" }], { no_cache: true })), false, "就算 ok 也一样,声明优先");
   assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1" }], { no_cache: false })), true, "显式 false 不拦");
+  // 🔴 partial + 占位 0 有证据也不留:一次盘前空响应不能变成下次打开看到的「确实是 0」
+  assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1", value: 0 }], { placeholder_zero: true })), false,
+    "占位 0 不许进快照");
+  assert.equal(keepableForSnapshot(mk(2, "partial", [{ id: "e1", value: 0 }], { no_cache: true, placeholder_zero: true })), false);
 });

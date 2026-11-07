@@ -1,7 +1,7 @@
 /**
  * AI 盯盘 · 竞价与盘中路径版
  *
- * 跟「实时动态」那版同样 10 分钟一轮、只显示最新一轮；但喂进去的东西完全不同：
+ * 跟「实时动态」那版同样 3 分钟一轮、只显示最新一轮；但喂进去的东西完全不同：
  *   - 那边是**异动事件流**（急拉/急跌/封板/开板），让模型串故事；
  *   - 这边是**一天 6 个时点的横截面**（昨日涨停股中位、封板率、跌停、分板位），
  *     已经是结构化读数，模型不该重算判据，只该**解释规则判据说明了什么、下一个时点看哪一条**。
@@ -15,7 +15,8 @@ import { isMarketTrading } from "@/lib/marketSymbol";
 import type { IntradayResult } from "./watchTypes.ts";
 import { verdictDigest } from "./intradayVerdict.ts";
 
-const POLL_INTERVAL_MS = 10 * 60 * 1000;
+/** 2026-11-06 由 10 分钟改成 3 分钟：用户要求（AI 盯盘要跟得上盘口，10 分钟太钝） */
+const POLL_INTERVAL_MS = 3 * 60 * 1000;
 
 const PROMPT = `你是盘中节奏分析师。下面给的是同一天里已经存下的若干时点快照（09:25 竞价 + 盘中各时点），
 以及前端用固定规则算出的三条判据和它们的判定结果。
@@ -98,7 +99,7 @@ export function useIntradayAiWatch(r: IntradayResult | null): IntradayAiState {
       });
   }, []);
 
-  // 依赖取「今天开不开市 + 存到第几张」这种离散量：r 本身每分钟换引用，放进依赖会把 10 分钟节奏架空
+  // 依赖取「今天开不开市 + 存到第几张」这种离散量：r 本身每分钟换引用，放进依赖会把 3 分钟节奏架空
   const savedCount = r?.today && r.trading_day !== false ? r.slots.filter((s) => s.state === "saved").length : 0;
   useEffect(() => {
     const on = isMarketTrading("CN") && savedCount > 0;

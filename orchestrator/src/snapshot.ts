@@ -25,8 +25,16 @@ import { atomicWrite, nowIso, readJsonIfExists } from "./fsutil.ts";
 /** 快照结构版本。**改了信封形状就 +1** —— 旧快照会被当成过期,重新取一次 */
 export const SNAPSHOT_SCHEMA = 1;
 
-/** 内存层存活时间:同一次会话里连点几下不重复读盘。磁盘层没有过期概念(那是用户点刷新的事) */
+/** 内存层存活时间:同一次会话里连点几下不重复读盘。磁盘层同样不许无限期命中 */
 const MEM_TTL_MS = 60_000;
+
+/**
+ * `prefer_cache` 没给上限时的兜底。**不许再有「不限」** ——
+ * 2026-11-06 事故里 `DEFAULT_CONSISTENCY` 没有 `max_age_ms`,`snapshotUsable()` 又
+ * 在「一个上限都没有」时 `return true`,快照键不含日期 ⇒ 同一把键 7 天不换。
+ * 这里给 Core 层一个统一的缺省;`finance/snapshot_ttl.ts` 的表与兜底都复用它。
+ */
+export const DEFAULT_PREFER_CACHE_MAX_AGE_MS = 2 * 60_000;
 
 /**
  * 取数一致性策略。**不能只有一个 `refresh: boolean`** ——
@@ -37,10 +45,10 @@ const MEM_TTL_MS = 60_000;
  */
 export type Consistency =
   | { mode: "cache_only" }                              // 只读快照,没有就没有(离线 / 绝不联网)
-  | { mode: "prefer_cache"; max_age_ms?: number }       // 有就用,可给时效上限
+  | { mode: "prefer_cache"; max_age_ms?: number }       // 有就用,可给时效上限;没给也有缺省
   | { mode: "fresh" };                                  // 必须真取(刷新 / 体检 / 正式研究运行)
 
-export const DEFAULT_CONSISTENCY: Consistency = { mode: "prefer_cache" };
+export const DEFAULT_CONSISTENCY: Consistency = { mode: "prefer_cache", max_age_ms: DEFAULT_PREFER_CACHE_MAX_AGE_MS };
 
 export interface Snapshot<T = unknown> {
   schema: number;
@@ -108,7 +116,13 @@ export function snapshotUsable(snap: Snapshot | null, c: Consistency, endpointMa
   // 端点声明的上限**永远生效**,调用方放宽不了 —— 它是数据本身的性质(如 session_phase 随分钟变)
   const limits = [endpointMaxAgeMs, c.mode === "prefer_cache" ? c.max_age_ms : undefined]
     .filter((x): x is number => typeof x === "number");
-  if (limits.length === 0) return true;
+  if (limits.length === 0) {
+    // `cache_only` 是显式「离线 / 绝不联网」语义:有就用,不受时效影响。
+    // 但 `prefer_cache` 没写上限**不再等于永不过期**,统一落缺省;
+    // 结构口子在这里堵死,调用方手写 `{mode:"prefer_cache"}` 也绕不过去。
+    if (c.mode !== "prefer_cache") return true;
+    limits.push(DEFAULT_PREFER_CACHE_MAX_AGE_MS);
+  }
   const age = Date.now() - Date.parse(snap.fetched_at);
   return age <= Math.min(...limits);
 }

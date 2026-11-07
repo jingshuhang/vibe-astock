@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, LoaderCircle, Sparkles, Terminal, X } from "lucide-react";
 import { ApiError, backend, friendlyAgentError } from "@/lib/backend";
-import { LLM_KEY, saveUserLlm } from "@/lib/llmStore";
+import { LLM_KEY } from "@/lib/llmStore";
+import { saveLlmEverywhere } from "@/lib/llm";
 import { subscriptionConfig, testAndSaveAi } from "@/lib/aiConnection";
 
 const OPTIONS = [
@@ -36,7 +37,8 @@ export function QuickAiConnect({ onDismiss, storageStatus }: { onDismiss: () => 
     setBusy(provider); setError("");
     try {
       await testAndSaveAi(subscriptionConfig(provider), {
-        read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveUserLlm,
+        // 与设置页同一条保存路径:除了浏览器这份,还要同步给后端定时任务用
+        read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlmEverywhere,
       }, controller.signal);
       onDismiss();
     } catch (e) {

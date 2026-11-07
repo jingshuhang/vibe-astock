@@ -49,6 +49,15 @@ test("涨跌分布:上涨 / 下跌 / 平盘按档位合计;涨 5% 以上 = 5~6% 
   assert.equal(noBj.amount, null, "缺一所的成交额,合计就不算 —— 少算一所比空着更误导");
   const none = parseBreadth(env([...ex("SH", 1, 6e11)]))!;
   assert.equal(none.up, null, "分布没取到时涨跌家数是 null(三所家数口径不同,不拿来顶)");
+  assert.equal(none.exchangesMissing, false, "只缺一家不算整块没取到");
+
+  // 三所家数整块断、分布还在:分布该算的照算,同时明确标出缺口 ——
+  // 实测两套口径差约 5%(2026-11-06 分布 5379 只 / 三所 5650 只),不许合并
+  const noEx = parseBreadth(env([dist(11, 32, "涨停"), dist(1, 640, "涨 0~1%"), dist(0, 68, "平盘"), dist(-1, 760, "跌 0~1%"), dist(-11, 15, "跌停")]))!;
+  assert.equal(noEx.up, 672, "分布还在就照分布算");
+  assert.equal(noEx.down, 775);
+  assert.equal(noEx.exchangesMissing, true, "三家全空 = 整块没取到,页面要说出来");
+  assert.equal(noEx.amount, null);
 });
 
 test("派生标签按写死的阈值", () => {

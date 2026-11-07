@@ -6,11 +6,12 @@
  *
  * 这一页按**客观状态**分组(今天要处理 / 待执行 / 已过期 / 已成交 / 已放弃),不替用户排重要度。
  */
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { AlertTriangle, CheckCircle2, ClipboardCheck, Plus, RefreshCw, X } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { backend, ApiError } from "@/lib/backend";
+import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 import { cn } from "@/lib/utils";
 import { PLAN_KIND, PLAN_LIFECYCLE_META, type PlanLifecycle, type PlanView, type PlansResult } from "@/lib/plans";
 import type { MarketSignal } from "@/lib/marketState";
@@ -214,19 +215,24 @@ export function TradePlans() {
   const [err, setErr] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [openForm, setOpenForm] = useState(false);
+  /** 最近一次**取完数**的时刻 —— 自动刷新据此决定切回前台要不要补 */
+  const loadedAt = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true); setErr("");
     try {
       setData(await backend.tradePlans());
       // 市场信号独立取数:失败不影响计划列表,只出不来横幅
-      try { setSignal((await backend.marketState()).signal); } catch { setSignal(null); }
+      try { setSignal((await backend.marketState()).signal); loadedAt.current = Date.now(); } catch { setSignal(null); }
     }
     catch (e) { setErr(e instanceof ApiError ? `${e.status} ${e.message}` : String(e)); }
     finally { setBusy(false); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 这一页的仓位上限/风险档来自「市场状态」，原来只在打开时取一次 —— 盘中会一直挂着开盘时那份。
+  useMarketAutoRefresh({ onTick: () => { void load(); }, loadedAt: loadedAt.current });
 
   async function create(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();

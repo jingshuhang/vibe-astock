@@ -59,7 +59,10 @@ export async function shortlineReviewJob(j: JobContext, deps: { turn?: TurnFn } 
   const done = run.stages.filter((s) => s.status === "done");
   const skipped = run.stages.filter((s) => s.status === "skipped");
   const chars = done.reduce((n, s) => n + (s.text?.length ?? 0), 0);
+  // 🔴 有段没写成 / 跳过 / 资料包有缺口,就不能让调度器记 ok:界面要显示「已运行(有缺口)」
+  const incomplete = bad.length > 0 || skipped.length > 0 || run.gaps.length > 0;
   return {
+    status: incomplete ? "partial" : "ok",
     messages: [{
       title: `AI 情绪复盘 ${run.date} 已写完并存档`,
       lines: [

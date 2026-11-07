@@ -57,6 +57,14 @@ export interface JobResult {
   state?: unknown;
   /** 给界面看的一句话(比如「自选为空,没有可看的」) */
   note?: string;
+  /**
+   * 任务自己说这一趟跑成什么样。不写 = `ok`。
+   *
+   * 为什么需要它:有些任务「跑完了,但有一部分数据没落成」(台账缺了几条、某个源没取到)。
+   * 以前这种也记 `ok`,界面显示「已运行」,缺口只在 note 里 —— 不点开就看不见,等于静默丢数据。
+   * 只能往**下**报:写 `ok` 或 `partial`,失败仍然由抛错判定(任务不能自称失败来绕过重试)。
+   */
+  status?: "ok" | "partial";
 }
 
 export interface ScheduledJobDef {
@@ -149,7 +157,7 @@ interface Settings {
 interface JobState {
   last_day?: string;
   last_run_at?: string;
-  status?: "ok" | "failed" | "blocked" | "skipped" | "running";
+  status?: "ok" | "partial" | "failed" | "blocked" | "skipped" | "running";
   note?: string;
   attempt?: { day: string; n: number; retry_after?: string };
   data?: unknown;
@@ -546,6 +554,8 @@ function checkResult(r: unknown): JobResult {
       throw new Error("任务返回的消息格式不对");
     }
   }
+  // 任务只能报「完整 / 有缺口」;想报别的(比如 failed)不认,免得绕过重试逻辑
+  if (r.status !== undefined && r.status !== "ok" && r.status !== "partial") throw new Error("任务返回的状态只能是 ok 或 partial");
   return r as unknown as JobResult;
 }
 
@@ -612,7 +622,7 @@ async function runJob(ctx: ServiceContext, def: ScheduleDef, job: ScheduledJobDe
       const note = [r.note ?? (r.messages.length ? `生成 ${r.messages.length} 条` : "没有要提醒的"), pushNote].filter(Boolean).join(";");
       const next: JobState = {
         ...(manual ? { ...(prev.last_day ? { last_day: prev.last_day } : {}) } : { last_day: day }),
-        last_run_at: now.toISOString(), status: "ok", note: `${manual ? "手动运行:" : ""}${note}`,
+        last_run_at: now.toISOString(), status: r.status === "partial" ? "partial" : "ok", note: `${manual ? "手动运行:" : ""}${note}`,
         // 手动运行只是看一眼:不改任务记下的进度(看过的公告、提醒过的判据),否则当天定时那次就没东西可推了
         ...(r.state !== undefined && !manual ? { data: r.state } : prev.data !== undefined ? { data: prev.data } : {}),
       };
@@ -673,24 +683,65 @@ function gateFor(ctx: ServiceContext, def: ScheduleDef, day: string, now: Date):
  * 跨进程只让一个调度在跑(同一数据目录开了两个后台时,不推两遍)。
  * 每跑一个任务前 `touch` 一下:一拍里排了几个慢任务时,锁文件不会因为太久没动被另一个进程当成死锁清掉。
  */
+/**
+ * 删锁被环境策略拦下时写进锁文件的「已释放」标记。
+ *
+ * 🔴 2026-11-06 实测：沙箱的 SAFE_DELETE_BULK_CONFIRM_REQUIRED 会拦下 fs.rmSync，
+ *    而原来 unlock() 直接裸调 rmSync、没有 try/catch（同一文件里的 touch() 却包了）。
+ *    后果链条：unlock 抛错 → 锁文件残留、mtime 又被 touch 过 → 要等 staleMs（约 11 分钟）
+ *    才判死 → 期间所有 tick 静默返回 skipped「另一个后台进程正在调度」。
+ *    不报错、只是不跑任务，是最难发现的那类故障，所以降级必须留痕、不能静默。
+ */
+const LOCK_RELEASED = "released";
+
+/** 保守判定：只有明确的释放标记（或空文件）才算没主；其它内容一律当作「有人持有」 */
+function lockContentIsHeld(file: string): boolean {
+  try {
+    const c = fs.readFileSync(file, "utf8").trim();
+    return c !== "" && c !== LOCK_RELEASED;
+  } catch { return false; }
+}
+
+/** 释放锁：删得掉就删；删不掉就写释放标记并**显式告警**，绝不把异常抛回 finally */
+function releaseLock(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+    return;
+  } catch (e) {
+    // 删不掉不能抛：unlock 在 finally 里，抛了整拍都会报错；更不能让文件继续装作有人持有。
+    try { fs.writeFileSync(file, LOCK_RELEASED, { mode: 0o600 }); }
+    catch { console.error(`[notify] 锁文件既删不掉也写不进，只能等超时判死：${file}`); return; }
+    console.error(`[notify] 锁文件删不掉，已标记为释放（${e instanceof Error ? e.message : String(e)}）：${file}`);
+  }
+}
+
 function tryLock(dataRoot: string, now: Date, name = "tick.lock", staleMs = JOB_TIMEOUT_MS * 2 + GATE_TIMEOUT_MS): { unlock: () => void; touch: () => void } | null {
   const file = notifyPath(dataRoot, name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const token = `${process.pid}:${newId()}`;
   for (let i = 0; i < 2; i++) {
     try {
-      fs.writeFileSync(file, token, { flag: "wx", mode: 0o600 });
+      // 文件还在但已标记释放 = 上次删锁失败留下的残骸 → 直接覆盖重建。
+      // 覆盖写不是严格的原子互斥，但 mine() 会自校验内容：后写者会让前者立刻失效，
+      // 同一时刻仍最多只有一个进程认为自己是 owner。这条路径只在降级场景出现，
+      // 比「锁永远卡到 11 分钟后」好得多。
+      if (fs.existsSync(file) && !lockContentIsHeld(file)) {
+        fs.writeFileSync(file, token, { mode: 0o600 });
+      } else {
+        fs.writeFileSync(file, token, { flag: "wx", mode: 0o600 });
+      }
       const mine = () => { try { return fs.readFileSync(file, "utf8") === token; } catch { return false; } };
       return {
-        unlock: () => { if (mine()) fs.rmSync(file, { force: true }); },
+        unlock: () => { if (mine()) releaseLock(file); },
         touch: () => { if (mine()) { try { const t = new Date(); fs.utimesSync(file, t, t); } catch { /* 已被清理 */ } } },
       };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       // 上次进程异常退出留下的锁:超过一个任务超时 + 门判定超时的时长还在,就当它死了
-      const age = now.getTime() - fs.statSync(file).mtimeMs;
+      let age = staleMs;
+      try { age = now.getTime() - fs.statSync(file).mtimeMs; } catch { /* 文件刚好被清掉 → 直接重建 */ }
       if (age < staleMs) return null;
-      fs.rmSync(file, { force: true });
+      releaseLock(file);
     }
   }
   return null;

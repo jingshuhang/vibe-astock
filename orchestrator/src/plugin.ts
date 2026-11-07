@@ -274,6 +274,18 @@ export interface Plugin {
    */
   readonly analyzeSymbol?: (ctx: unknown, symbol: string, opts?: { refresh?: boolean; depth?: "basic" | "full" }) => unknown | Promise<unknown>;
   /**
+   * 垂类自己的**常驻后台任务**(可选):**真入口**(api.ts 的 main)起来时叫一次。
+   *
+   * 有些事按点跑不了(不是定时任务):比如「交易时段每几秒拍一次」这种连续轮询。
+   * 原来 api.ts 直接 `import ... from "./finance/shortline/watch.ts"` 把采集器挂起来 ——
+   * 换个垂类时,Core 会去启动一个它根本不认识的采集器(core_purity 第 8 条)。
+   * 现在 Core 只知道「叫一次」,叫起来的是什么由垂类自己决定;`VRA_SCHEDULER` 那类开关也归垂类管。
+   *
+   * ⚠️ 只给真入口调用,**不要放进 createApiServer**:测试里建服务时不该把这些挂起来。
+   * ⚠️ 实现方自己负责:定时器 `unref`(别拦着进程退出)、重复调用幂等、启动失败只记日志不抛。
+   */
+  readonly onStartup?: (ctx: unknown) => void;
+  /**
    * 研究列表显示的主体名称从哪几份取数产物里找(按顺序,找到即停)。只用于列表展示,不当证据。
    * 不提供 = 列表不显示名称。原来这三份文件名写死在 Core 里(第四轮审计 A6)。
    */
@@ -922,7 +934,7 @@ const NON_SCHEMA_SLOTS = [
   "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt",
   "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor",
   "gate", "pageContext", "reportRecall", "mcpGuide", "runNameSources", "savedCredentials",
-  "analyzeSymbol",
+  "analyzeSymbol", "onStartup",
 ] as const;
 
 /**
@@ -1585,6 +1597,7 @@ function register(plugin: Plugin): void {
     mcpGuide,
     // 含函数,没进 ajv 的 decl —— 从原插件对象直接带过来(同 pageContext)
     ...(plugin.analyzeSymbol === undefined ? {} : { analyzeSymbol: plugin.analyzeSymbol }),
+    ...(plugin.onStartup === undefined ? {} : { onStartup: plugin.onStartup }),
     ...(runNameSources === undefined ? {} : { runNameSources }),
     ...(savedCredentials === undefined ? {} : { savedCredentials }),
     baselinePeriod,
