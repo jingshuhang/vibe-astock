@@ -575,7 +575,10 @@ function ensureLock(dataRoot: string, token: string): CollectorLock | null {
 }
 
 export interface CollectorDeps extends PollDeps {
+  /** 正常状态信息(默认 console.log → 落盘 [info]) */
   log?: (line: string) => void;
+  /** 取数失败 / 降级(默认 console.error → [error]);与 log 分开,别把失败刷成 info */
+  logError?: (line: string) => void;
   /** 第一拍等多久(进程刚起来,先让别的启动项占住) */
   firstDelayMs?: number;
   /** 测试用:换掉每拍间隔的计算。返回 0 表示按「不在采集窗口」处理 */
@@ -596,7 +599,8 @@ let collectorStopFn: (() => void) | null = null;
 export function startAlertCollector(ctx: ServiceContext, deps: CollectorDeps = {}): () => void {
   if (collectorTimer) return () => undefined;
   const clock = deps.clock ?? (() => new Date());
-  const log = deps.log ?? ((line: string) => console.error(line));
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const logError = deps.logError ?? ((line: string) => console.error(line));
   const token = `${process.pid}:${Date.now()}`;
   let stopped = false;
   let fails = 0;
@@ -631,7 +635,7 @@ export function startAlertCollector(ctx: ServiceContext, deps: CollectorDeps = {
     } catch (e) {
       fails += 1;
       const why = e instanceof Error ? e.message : String(e);
-      if (why !== noted && (fails <= 2 || fails % 30 === 0)) { noted = why; log(`[collector] 这一拍没采到:${why}`); }
+      if (why !== noted && (fails <= 2 || fails % 30 === 0)) { noted = why; logError(`[collector] 这一拍没采到:${why}`); }
       arm(Math.min(POLL_MS * 2 ** Math.min(fails, 5), 60_000));
     }
   };
@@ -646,6 +650,7 @@ export function startAlertCollector(ctx: ServiceContext, deps: CollectorDeps = {
   };
   collectorStopFn = stop;
   arm(deps.firstDelayMs ?? 800);
-  log(`[collector] 盘中常驻采集已启动(连续竞价每 ${POLL_MS / 1_000} 秒一拍,页面关掉也照采)`);
+  // 「已挂载」而不是「已启动采集」:休市日 / 非交易时段定时器照样挂着,但每拍会跳过、不取数。
+  log(`[collector] 常驻采集已挂载(连续竞价每 ${POLL_MS / 1_000} 秒一拍;非交易时段不取数,不依赖页面)`);
   return stop;
 }

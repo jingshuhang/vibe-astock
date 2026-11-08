@@ -9,6 +9,23 @@
 
 ### 修复
 
+- **启动日志三行正常信息全标 `[error]`，级别读反了**（2026-11-08，来自用户贴的启动日志）。
+  - 现象：`17:44:33 [error] [collector] 盘中常驻采集已启动`、`[error] [api] listening …`、`17:44:48 [error] [notify] …=skipped` —— 一份**成功的**启动日志三行全是错误级别。
+  - 根因：`runlog.ts` 把 `console.log → [info]` / `console.error → [error]`，但 `api.ts` 的 listening、`notify.ts:startScheduler` 默认 log、`watch.ts:startAlertCollector` 默认 log 全用 `console.error` 打正常信息。筛不出真错误，人也会被误导（与「风险 15 分被读反」同类）。
+  - 修法：三处默认 log 改 `console.log`；`startScheduler` / `startAlertCollector` 各加一个可注入的 `logError`（默认 `console.error`），把「每拍钩子出错 / 调度出错 / 这一拍没采到」分流回 error；锁删不掉那类降级告警继续 error。
+  - **没一刀切**：`run.ts` / `batch.ts` / `alerts.ts` / `doctor.ts` 这些 CLI，以及可能被 MCP stdio 进程调用的 `service.ts`，stdout 是 JSON / JSON-RPC 契约，**必须继续走 stderr**。改前核实 `[api] listening` 没有任何代码解析（`startup.ts` 与 `start.ps1` 都是共用控制台、就绪靠 `/health` 探活），顺手把 `api.ts` 里「桌面外壳靠这一行」的过时注释改准。
+  - 回归：`log_levels.test.ts` 一条真行为（装镜像后 `console.log` 落 `[info]`、不落 `[error]`）+ 结构断言钉住分级与「CLI 不许被改」；`core_purity.test.ts` 仍绿。
+- **Windows 启动窗口首行刷乱码「不是内部或外部命令」**（同一份日志）。
+  - 乱码串反推 ≈「时窗口会一闪而过、看不出原因」，来自 `scripts/start.cmd:4` 的 `rem` 注释**后半段**：UTF-8 无 BOM 遇上 CMD 默认 cp936，中文注释误解码后 `rem` 被截断，后半段被当命令执行。根目录 `启动VibeAStock.bat` 还是 LF-only（CMD 逐行只认 CRLF）。服务照常启动，属无害但误导的假错误。
+  - 精确是哪个字节被当分隔符**没定位到**：想跑最小 `.cmd` 实机复现时被沙箱拦下（不允许从 Bash 启 `cmd.exe`），按安全策略没绕过、也没编。修复不依赖这个断点。
+  - 修法：两个脚本改成**纯 ASCII + CRLF**，中文说明移到 README；`start.ps1` 带 UTF-8 BOM 不乱码，不动。没用 `chcp 65001`：旧版 CMD 在含多字节字符的批处理里切代码页有读取偏移的已知问题。
+  - ⚠️ **只改工作区文件不够**：`.gitattributes` 原先只给 `*.cmd` 钉了 `eol=crlf`，根目录 `启动VibeAStock.bat` 归默认的 `* text=auto eol=lf` 管 —— 这正是它当初变成 LF-only 的原因，提交后还会被洗回去。已补 `*.bat text eol=crlf`，`git check-attr eol` 现在两个文件都是 `crlf`，并在 `startup_scripts.test.ts` 里断言钉死这条规则。
+  - 回归：`startup_scripts.test.ts` 读真实文件字节，断言零非 ASCII、`LF == CRLF`、无 BOM、`start.ps1` 仍带 BOM，以及 ASCII 化没丢启动逻辑（密钥读取、代理清空、`call`、`%~dp0start.ps1`、`pause`）。
+- **同一份日志里另外三条判定为正常，不改代码**（判据已写进 README）：
+  - Vite 的 `http proxy error: /health` + `ECONNREFUSED`：页面与后端并行拉起，就绪循环每 250ms 探 `/api/health`（rewrite 成 `/health` 转发 8770），后端还没 listening 的那几秒必然连不上；`vite.config.ts` 的 `proxy.on("error")` 返回 JSON 502 而非 HTML，前端 `res.json()` 不会炸。
+  - `notify …=skipped`：2026-11-08 是**周日**，`.local/notify/state.json` 落盘 `gate={"day":"2026-11-08","status":"closed","reason":"周末休市"}`，四个任务都 `skipped / 今天不运行:周末休市`。`finance/schedule.ts:83` 周末判 closed → `notify.ts` 标 skipped。**这是诚实标注没跑**，不是漏跑。
+  - `[collector] 盘中常驻采集已启动` 休市日照打：文案改成「常驻采集已挂载…非交易时段不取数」，说清是定时器挂着而非正在采。
+  - **P2 两条明确不改，取舍留痕**：①「先等 API ready 再起 Vite」会把并行的启动串行化、总时长变成两者之和，而重试循环本来就在做这件事；② 收敛 proxy error 打印要 hack Vite 内建 logger，且那几行是「后端尚未就绪」的真实信号，压掉反而违反诚实。不装作已修。
 - **「机会发现」页的题材、龙头封单、首封/末封时间是 `10-30` 的，摆了 7 天，而同屏的涨停家数是当天的。** 用户先觉得「左面退潮期、右面逆势启动」矛盾，查下去发现两侧根本不是同一天的数据。
   - 证据链：① `三季报增长 15 只 / 最高 5 板`、`"羊"字辈 6 / 3 板`、`大消费 6 / 2 板`、`三季报大增 5 / 1 板` 与 **10-30** 那份题材树逐项一致；② 龙头「青岛食品」写着 `5 板 / 首封 09:30 / 末封 13:00 / 封单 0.57 亿`，而 10-30 的树里正好有 `青啤拟入主=1只/最高5板`、`饼干食品=1只/最高5板`，它**不在今日 26 只涨停池里**（push2ex 实时池，这一条本身可信；它旁边那个「今日 -1.81%」反而是冻结的行情键，见下文 `fetchQuotes`）；③ 现场探针 `POST /fetch {cn_shortline_themes, top:12}` 返回 `cached:true, fetched_at:2026-10-30T19:36:55, date:2026-10-30`。
   - 根因是两道门同时没关：`DEFAULT_CONSISTENCY` 是 `{mode:"prefer_cache"}` **不带 `max_age_ms`**，而 `snapshotUsable` 在「一个上限都没有」时直接 `return true`；快照键又只由「端点+参数」决定、**不含日期** —— 于是同一把键一次写入、永久命中。第二道门：`opportunityScanAct` 的 `body` 参数写作 `_body`、全程没读过，页面 `?refresh=1` 被直接丢掉，**点「刷新」也救不回来**。看着「新」的端点都是别人在替它刷（`live` 靠后台常驻采集、`em_*` 靠市场状态、`sina_board_flow` 靠盯盘概况轮询），没有第二个调用方的键就永久冻结。全库 182 个端点**没有一个**声明 `cache_max_age_sec`，这道保险其实从未生效。

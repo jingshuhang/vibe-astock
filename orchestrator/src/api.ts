@@ -565,8 +565,10 @@ async function main(): Promise<void> {
   srv.listen(port, host, () => {
     // 🔴 **整行都用实际端口**。只改前半段的话,给用户点的那个登录链接仍然写着 `:0`,
     //    照着点必然打不开 —— 而这一行看起来是「已经修好了」的。
+    // 这行只给人看:子进程都是 stdio inherit、控制台共用,没有程序解析它(就绪靠 /health 探活)。
+    // 它是启动信息而不是异常,走 console.log → 盘上日志是 [info];真异常仍走 console.error → [error]。
     const p = actualPort(srv, port);
-    console.error(`[api] listening http://${host}:${p}  token 来源=${tk.source}(文件 .local/api.token;请求头 Authorization: Bearer <token>;${loopback ? `浏览器打开 http://${host}:${p}/login?token=<token> 进入运行列表页 /ui` : "非本机绑定:cookie 登录已关闭,只认 Bearer"})`);
+    console.log(`[api] listening http://${host}:${p}  token 来源=${tk.source}(文件 .local/api.token;请求头 Authorization: Bearer <token>;${loopback ? `浏览器打开 http://${host}:${p}/login?token=<token> 进入运行列表页 /ui` : "非本机绑定:cookie 登录已关闭,只认 Bearer"})`);
   });
 }
 

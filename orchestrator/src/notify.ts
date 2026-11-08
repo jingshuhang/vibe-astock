@@ -871,9 +871,15 @@ let schedulerTimer: NodeJS.Timeout | null = null;
 let beatTimer: NodeJS.Timeout | null = null;
 
 /** 后台每分钟一拍。只在 API 入口(main)启动;`VRA_SCHEDULER=off` 关闭 */
-export function startScheduler(ctx: ServiceContext, opts: { intervalMs?: number; log?: (line: string) => void } = {}): () => void {
+/**
+ * 日志分两路:正常状态走 `log`(默认 console.log → 落盘 [info]),异常走 `logError`(默认 console.error → [error])。
+ * 以前两者共用 console.error,一份健康的启动日志会三行全标 [error],级别就读反了 ——
+ * 筛不出真错误,人也会被误导。两个入口都留着可注入,测试照样能收。
+ */
+export function startScheduler(ctx: ServiceContext, opts: { intervalMs?: number; log?: (line: string) => void; logError?: (line: string) => void } = {}): () => void {
   if (schedulerTimer) return () => undefined;
-  const log = opts.log ?? ((line: string) => console.error(line));
+  const log = opts.log ?? ((line: string) => console.log(line));
+  const logError = opts.logError ?? ((line: string) => console.error(line));
   const interval = opts.intervalMs ?? 60_000;
 
   // ① 每拍钩子:独立定时器 + 独立单飞。**不受任务队列影响** —— 这是盘中快照的命门
@@ -885,14 +891,14 @@ export function startScheduler(ctx: ServiceContext, opts: { intervalMs?: number;
       // 一天顺手做一次数据维护(raw 归档会一直长,清不动的代价是磁盘满后取数静默失败)
       const p = pruneRawOncePerDay(ctx.dataRoot);
       if (p && p.deleted > 0) log(`[notify] 回收 raw ${p.deleted} 个(${(p.freedBytes / 1048576).toFixed(1)}MB),仍被引用留着 ${p.keptReferenced} 个、窗口内 ${p.keptRecent} 个`);
-    }).catch((e) => log(`[notify] 每拍钩子出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
+    }).catch((e) => logError(`[notify] 每拍钩子出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
   };
 
   // ② 任务队列:跑到点的任务。可能跑很久(单个任务上限一小时),所以它**不能**挡住 ①
   const runJobs = () => {
     tick(ctx, { skipBeat: true }).then((r) => {
       if (r.ran.length) log(`[notify] ${r.day} ${r.hm} ${r.ran.map((x) => `${x.id}=${x.status}`).join(" ")}`);
-    }).catch((e) => log(`[notify] 调度出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
+    }).catch((e) => logError(`[notify] 调度出错:${scrubSecrets(e instanceof Error ? e.message : String(e))}`));
   };
 
   const firstBeat = setTimeout(beatOnce, 5_000);

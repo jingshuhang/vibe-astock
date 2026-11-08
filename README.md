@@ -449,6 +449,9 @@ scripts/start
 - macOS / Linux 不想自动打开浏览器时，运行 `scripts/start --no-open`。
 - Vite 只在本机代理 `/api/*`，并在服务端补上鉴权信息。若设置了 `VRA_DATA_ROOT`，两个进程必须使用同一个值。
 - 盯盘的自动刷新、收盘取数和盘中快照都要程序开着；电脑关机或程序没开时不会运行，盘中快照过了时点补不回来。
+- **Windows 启动脚本为什么写英文**：`启动VibeAStock.bat` 与 `scripts\start.cmd` 刻意只写 ASCII、用 CRLF 换行。CMD 按 cp936 读批处理，UTF-8 中文注释会整行误解码；2026-11-08 实测有一行 `rem` 注释的后半段被当成命令执行，窗口首行报「不是内部或外部命令」。服务其实照常启动，但每次刷一行假错误，容易误判成启动失败。中文说明放本节；`scripts\start.ps1` 带 UTF-8 BOM，不受影响，仍可写中文。换行由 `.gitattributes` 的 `*.bat` / `*.cmd` → `eol=crlf` 锁住，否则提交时会被默认的 `eol=lf` 洗回去。
+- **启动日志里几行 `http proxy error: /health` + `ECONNREFUSED` 通常不是故障**：页面与后端并行拉起，启动器每 250ms 探一次 `/api/health` 直到就绪（最多 90 秒），后端还没监听的那几秒代理必然连不上。判据是后面有没有出现 `[api] listening http://127.0.0.1:8770` 和「Vibe AStock 已启动」——两行都有即启动成功；**始终等不到 `listening` 才是后端真没起来**。
+- **日志级别**：`.local/logs/api-YYYY-MM-DD.log` 里 `[info]` 是正常状态（含休市日的 `skipped`）、`[warn]` 是降级、`[error]` 是真异常。此前正常信息全走 `console.error`，一份健康的启动日志三行都是 `[error]`，2026-11-08 已分流。
 
 部署、接口与维护说明见 [AGENTS.md](AGENTS.md)；`desktop/` 是浏览器前端目录，不是桌面客户端。
 
