@@ -406,7 +406,7 @@ export function MarketState() {
       ? `市场状态(${data.clock} 北京时间):算不出来。\n`
         + `原因: ${data.signal.unavailable}\n`
         + `⚠️ 没有综合健康分、没有仓位上限、也没有「能不能开新仓」的结论。不要据此推断市场强弱或建议仓位。\n`
-        + `数据来源: ${data.signal.sources.join(", ")}`
+        + `预期取数来源(设计清单,不代表本次全部取到): ${data.signal.sources.join(", ")}`
         + (data.notes.length ? `\n降级提示: ${data.notes.join(";")}` : "")
       : `市场状态(${data.clock} 北京时间):\n`
         + `综合健康分 ${data.signal.composite} 分 · ${data.signal.phase}`
@@ -431,7 +431,7 @@ export function MarketState() {
           + (call.judged > 0 ? `;触发命中战绩 ${call.hit}/${call.judged}(判得了的才计)` : "")
           + `\n${call.caveat}\n`
           : "大盘判断台账: 还没有落账记录(全景收盘档还没落过交接件)。\n")
-        + `数据来源: ${data.signal.sources.join(", ")}`
+        + `预期取数来源(设计清单,不代表本次全部取到): ${data.signal.sources.join(", ")}`
         + (data.notes.length ? `\n降级提示: ${data.notes.join(";")}` : "");
 
   useAiPage({
@@ -484,7 +484,7 @@ export function MarketState() {
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>派生于 {data.date} {data.clock}(北京时间)</span>
               <span className="text-border">·</span>
-              <span>{signal.sources[0] ?? ""}</span>
+              <span title="这是预期取数来源清单的首项，不代表本次这一路一定取到了">{signal.sources[0] ?? ""}</span>
             </div>
           </div>
         </GlassCard>
@@ -570,13 +570,16 @@ export function MarketState() {
 
         {/* 数据来源 & 降级提示 */}
         <GlassCard>
-          <h2 className="mb-2 text-sm font-semibold">数据来源</h2>
+          <h2 className="mb-2 text-sm font-semibold">预期取数来源</h2>
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            下面是本页设计上会取的六路，<b className="font-medium text-foreground">不是本次实际命中核对</b>：某一路取数失败、用缓存或由备源顶上时，它照样列在这里。本次缺口看下面的降级提示。
+          </p>
           <ul className="space-y-1 text-xs text-muted-foreground">
             {signal.sources.map((s) => <li key={s}>• {s}</li>)}
           </ul>
           {signal.data_as_of && (
             <p className="mt-2 text-[11px] text-muted-foreground">
-              各来源数据日期：
+              各来源取数日期（不是数据归属日）：
               {Object.entries(signal.data_as_of).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ") || "—"}
             </p>
           )}

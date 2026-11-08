@@ -88,3 +88,51 @@ test("[结构] 重建基线遇新增失败要 --force；--flaky 新增要 --allo
   // ⚠️ 诚实留白:--update-baseline 的拒绝只做了源码断言,没端到端子进程验证 ——
   //    跑一次要 3-5 分钟且会写真实基线,不适合放进单元测试。手工验收见 CHANGELOG。
 });
+
+test("[行为] --unflaky 缺复核依据 / 匹配不精确时一律拒绝,基线一个字节都不动", () => {
+  const before = readFileSync(baseline);
+  const noReason = runDelta(["--unflaky", "service_api_mcp.test.ts::断开 /debate"]);
+  assert.equal(noReason.status, 2);
+  assert.match(noReason.stderr, /--reason/);
+  assert.deepEqual(readFileSync(baseline), before);
+
+  const noHit = runDelta(["--unflaky", "zzz_no_such.test.ts::某用例", "--reason", "测试"]);
+  assert.equal(noHit.status, 2);
+  assert.deepEqual(readFileSync(baseline), before);
+
+  const tooMany = runDelta(["--unflaky", "service_api_mcp.test.ts", "--reason", "测试"]);
+  assert.equal(tooMany.status, 2, "模糊串会一次改多条,必须拒绝");
+  assert.match(tooMany.stderr, /精确匹配 1 条/);
+  assert.deepEqual(readFileSync(baseline), before);
+});
+
+test("[行为] 争议条目已由脚本撤销 flaky：文案自洽、复核留痕、没伪造生成时间", () => {
+  const b = JSON.parse(readFileSync(baseline, "utf8")) as {
+    generatedAt: string; lastReviewedAt?: string; count: number; flakyCount: number;
+    entries: { name: string; flaky?: boolean; cause: string; err: string; reviewedAt?: string; reviewNote?: string }[];
+  };
+  const e = b.entries.find((x) => x.name.includes("断开 /debate"));
+  assert.ok(e, "争议条目要还在");
+  assert.equal(e.flaky, false, "单跑仍红就不该继续免检");
+  assert.notEqual(e.cause, "flaky-load");
+  assert.ok(e.reviewedAt && e.reviewNote, "复核要留痕");
+  assert.doesNotMatch(e.err, /单独复跑通过/, "旧自动文案与复核结论矛盾,必须一并改写");
+  assert.equal(b.generatedAt, "2026-11-01T10:33:03.644Z", "局部复核不许伪装成重新生成整份基线");
+  assert.ok(b.lastReviewedAt, "但要另记复核时间");
+  assert.equal(b.count, 45);
+  assert.equal(b.flakyCount, 4);
+});
+
+test("[结构] 重建时 prevFlaky 只认 e.flaky，--unflaky 的修正才不会被继承回去", () => {
+  const src = readFileSync(script("test-delta.mjs"), "utf8");
+  assert.ok(src.includes("--unflaky"), "要有显式纠正命令");
+  assert.ok(src.includes("if (e.flaky) prevFlaky.set("), "继承必须带 flaky 条件,别改回「历史上一律继承」");
+  assert.ok(src.includes("e.flaky = false") && src.includes("e.reviewedAt ="), "修正要写回标记与复核记录");
+  assert.ok(src.includes("byCause = byCause"), "归类计数要重算,不能留旧数");
+});
+
+test("[结构] npm test:baseline 不许把 --force 写死", () => {
+  const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { scripts: Record<string, string> };
+  assert.equal(pkg.scripts["test:baseline"], "node scripts/test-delta.mjs --update-baseline",
+    "保持安全默认;确认收编时用 npm run test:baseline -- --force 透传");
+});

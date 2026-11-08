@@ -65,3 +65,24 @@ test("风险等级徽标与「抗跌度」方向相反:同源说明 + 悬停提�
     "四档 label 一个都不许改");
   assert.equal(Object.keys(RISK_LEVEL_META).length, 4, "不许顺手加档/改判据");
 });
+
+/**
+ * 2026-11-08 盘点：后端 `sources` 是六路**预期**来源常量，页面和 AI 上下文却写成
+ * 「数据来源」；`data_as_of` 装的是取数日期，字段名却叫「数据日期」。两处都会让人
+ * 把「设计上会取」读成「这次取到了」、把「什么时候取」读成「数据是哪天的」。
+ * 本轮只钉口径、不动任何判据（真实归属日待 2026-11-09 盘中实机取证）。
+ */
+test("来源清单与取数日期的口径不许读反:页面 / AI 上下文都写明是「预期」和「取数时间」", () => {
+  const page = read("pages/MarketState.tsx");
+  const view = backend("market_state.ts");
+  assert.match(view, /const DECLARED_SOURCES = \[/, "常量名要说清是声明式清单");
+  assert.match(view, /声明式清单,不是本次实际命中核对/);
+  assert.match(view, /不是数据归属日/, "字段注释要当场说破");
+  assert.match(view, /2026-11-09.*实机取证/, "改判据要等实机，别凭静态推断");
+  assert.equal((page.match(/不代表本次全部取到/g) ?? []).length, 2,
+    "算不出来 / 算得出来两条 AI 上下文都要带这句");
+  assert.ok(page.includes("不是本次实际命中核对"), "页面也要看得见，不能只藏在 title 里");
+  assert.ok(page.includes("各来源取数日期（不是数据归属日）"));
+  assert.doesNotMatch(page, /各来源数据日期：/, "旧口径不许回来");
+  assert.doesNotMatch(page, /`数据来源: \$\{data\.signal\.sources/, "旧两态文案不许回来");
+});

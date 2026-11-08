@@ -16,6 +16,7 @@
 //   node scripts/test-delta.mjs --only "market_call,schedule"  # 只跑部分文件(快验,不与基线比对)
 //   node scripts/test-delta.mjs --flaky "service_api_mcp.test.ts::请求体上限"  # 把基线里**已有**的条目标成不稳定
 //   ... --flaky "文件::用例" --allow-new      # 显式给基线新增一条(会校验文件存在)
+//   ... --unflaky "文件::用例" --reason "复核依据"  # 去掉错误的 flaky 标记并留复核记录(不重建整份基线)
 //   node scripts/test-delta.mjs --show-code   # 报告末尾打印基线内 code-* 的逐条清单(默认只打一行汇总)
 //   node scripts/test-delta.mjs --concurrency 8
 //
@@ -146,6 +147,50 @@ if (flakyPat) {
   process.exit(0);
 }
 
+// --unflaky:去掉一条**被误标成偶发**的 flaky 标记。
+// 🔴 为什么需要:prevFlaky 会在 --update-baseline 时对本轮仍失败的条目强制继承 flaky:true,
+//    kept 又会保留本轮通过的 flaky 条目 —— 靠重建**永远去不掉**这个标记;而 README 禁止手改
+//    生成物。于是「单跑仍红却写着『负载偶发』」这类失真条目没有纠正路径,成了死结。
+//    这里给一条显式、带复核留痕的命令:不改 generatedAt(局部复核 ≠ 重新生成),只改这一条并
+//    重算 flakyCount / byCause。flaky 置 false 后 prevFlaky / kept 自然不再继承它。
+const unflakyPat = getArg("--unflaky", "");
+if (unflakyPat) {
+  if (!existsSync(BASELINE)) {
+    process.stderr.write(`[test-delta] 没有基线文件 ${BASELINE}\n`);
+    process.exit(2);
+  }
+  if (!has("--reason") || !getArg("--reason", "")) {
+    process.stderr.write(`[test-delta] --unflaky 必须带 --reason "复核依据":去掉免检标记是加重门禁,得写清凭什么。\n`);
+    process.exit(2);
+  }
+  const reason = getArg("--reason", "");
+  const b = JSON.parse(readFileSync(BASELINE, "utf8"));
+  const hit = (b.entries || []).filter((e) => `${e.file}::${e.name}`.includes(unflakyPat));
+  if (!hit.length || hit.length > 1) {
+    process.stderr.write(`[test-delta] --unflaky 要精确匹配 1 条,实得 ${hit.length} 条("${unflakyPat}")。\n`);
+    process.exit(2);
+  }
+  const e = hit[0];
+  e.flaky = false;
+  // 「flaky-load」是脚本自动给的归类;人工推翻后不能继续冒充自动识别的偶发,退回待查。
+  if (e.cause === "flaky-load") e.cause = "code-or-unclear";
+  // 🔴 连 err 也要改:旧文案是「并行跑红、单独复跑通过:负载相关」,留着会和复核结论
+  //    在同一条记录里自相矛盾(读的人不知道该信哪句)。没抓到原始错误文本就如实留白,不编。
+  if (/^\(并行跑红、单独复跑通过/.test(e.err ?? "")) {
+    e.err = "(人工复核推翻:单跑仍红,不是负载偶发;原始错误文本待实机补录)";
+  }
+  e.reviewedAt = new Date().toISOString();
+  e.reviewNote = reason;
+  b.flakyCount = (b.entries || []).filter((x) => x.flaky).length;
+  const byCause = {};
+  for (const x of b.entries || []) byCause[x.cause] = (byCause[x.cause] || 0) + 1;
+  b.byCause = byCause;
+  b.lastReviewedAt = e.reviewedAt;
+  writeFileSync(BASELINE, JSON.stringify(b, null, 2));
+  process.stdout.write(`已撤销 flaky 并留复核记录: ${e.file} :: ${e.name}\n  cause=${e.cause}  flakyCount=${b.flakyCount}  byCause 已重算\n`);
+  process.exit(0);
+}
+
 process.stderr.write(`[test-delta] 逐文件跑${only ? `(--only ${only})` : "全量"}(concurrency=${concurrency}${only ? "" : ",约 3-5 分钟"})...\n`);
 const sweep = runSweep(concurrency, only);
 
@@ -186,6 +231,8 @@ if (has("--update-baseline")) {
   // 旧基线里标了 flaky 的条目:本轮仍在失败时要**继承**标记,
   // 否则重建一次就把「这条不稳」的知识清掉了(实测踩过:标记丢了,下次它偶发通过就被报成「已修复」)。
   const prevFlaky = new Map();
+  // 🔴 `if (e.flaky)` 是纠正路径的关键:--unflaky 把标记置 false 后这里不再继承它,
+  //    重建时才真的能去掉「误标偶发」。别改成「历史上 flaky 过的都继承」——那会把死结又焊上。
   for (const e of prevEntries) {
     if (e.flaky) prevFlaky.set(`${e.file}::${e.name}`, true);
   }

@@ -59,6 +59,7 @@ test("[行为] 一家都没解析出来 → breadth=empty、data=null、市场�
     assert.equal(v.breadth.status, "empty", "没数据不能报 ok");
     assert.equal(v.breadth.data, null, "不能给一份六个 0 的对象让前端当真值画");
     assert.match(v.breadth.note ?? "", /不是 0 家/, "要说清这不是「真的 0 家」");
+    assert.equal(v.marketState.status, "empty", "全空时内嵌市场状态也得是 empty");
     assert.ok(v.marketState.data, "算不出来的视图仍要返回,别抛异常");
     assert.match(v.marketState.data.signal.unavailable ?? "", /没取到涨跌分布/);
     assert.equal(v.marketState.data.signal.composite, null, "不给分数");
@@ -99,12 +100,28 @@ test("[行为] partial 且只取到部分分档 → 明确提示「没取到的�
   } finally { clean(c); }
 });
 
+test("[行为] 只取到部分分档 → 内嵌市场状态报 partial，并把缺口说明带出来", async () => {
+  const c = ctx();
+  try {
+    const v = await shortlineOverviewAct(c, {}, signal, {
+      fetch: fakeFetch({ status: "partial", evidence: BUCKETS.slice(0, 1), extra: {} }),
+    });
+    assert.equal(v.breadth.status, "partial");
+    assert.equal(v.marketState.status, "partial", "部分数据不许被吞成 ok");
+    assert.match(v.marketState.note ?? "", /别当成「一家都没有」/, "breadth 的缺口 note 要一路带到市场状态块");
+    assert.equal(v.marketState.data?.signal.unavailable, null, "仍算得出来,不该冒充「算不出来」");
+  } finally { clean(c); }
+});
+
 test("[结构] 后端不许退回 `?? 0` 占位，前端也不许无条件把六个计数画出来", () => {
   const backend = read(path.join("orchestrator", "src", "finance", "shortline", "overview.ts"));
   assert.doesNotMatch(backend, /c\?\.limit_up\s*\?\?\s*0/, "占位 0 的旧写法不能回来");
   assert.match(backend, /if \(!c\) return null;/, "解析不出来要真的返回 null");
+  assert.match(backend, /gaps\.length \? "partial" : "ok"/, "部分数据不许再被吞成 ok");
   const frontend = read(path.join("desktop", "src", "verticals", "finance", "shortline", "OverviewTab.tsx"));
   assert.match(frontend, /d\.limit_up \+ d\.limit_down \+ d\.up \+ d\.down \+ d\.flat === 0/,
     "前端要有第二道防线,旧后端 / 旧缓存的六个 0 也不许画成读数");
   assert.match(frontend, /note=\{block\.note\}/, "后端的缺口说明要传到页面上");
+  assert.match(frontend, /MarketStateOverviewPanel d=\{d as MarketStateResult\} note=\{block\.note\}/,
+    "市场状态块也要接住 partial 的缺口说明");
 });

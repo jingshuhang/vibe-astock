@@ -11,7 +11,7 @@ import type {
   OpportunityResult, LeaderPick, PlanDraft, SealBucket, SealTiming, MarketFacts, LiveEmotion,
 } from "@/lib/opportunity";
 import { IGNITION_META, ALLOWANCE_META, ROLE_META, seriesMax } from "@/lib/opportunity";
-import type { MarketStateResult } from "@/lib/marketState";
+import { canOpenLabel, type MarketStateResult } from "@/lib/marketState";
 import { isMarketTrading } from "@/lib/marketSymbol";
 import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 
@@ -768,6 +768,17 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
   useEffect(() => { void load(false); }, [load]);
 
   /**
+   * 🔴 缺口 / 降级 / 陈旧说明必须在 `useAiPage` **之前**算好。
+   *    以前这四行定义在下面渲染区（useAiPage 之后），于是界面上「N 项缺口 / 降级提示」
+   *    只给人看，喂给 AI 的上下文一个字都没带 —— 模型拿到的是一份没有任何缺口标注的
+   *    「完整」盘中判断，缺口被静默抹平。与「算不出来不许写成不可开新仓」同一条纪律。
+   */
+  const gaps = [...(day?.gaps ?? []), ...(chain?.gaps ?? [])];
+  const notes = [...(day?.notes ?? []), ...(chain?.notes ?? [])];
+  const staleDims = mkt?.signal.stale_dimensions ?? [];
+  const staleNote = staleDims.length ? `这些维度不是当日数据：${staleDims.join("、")}` : null;
+
+  /**
    * 盘中自动刷新：交易时段每 2 分钟一次 + 切回前台若已过期立刻补。
    * 这两条原来在本文件里手写，`MarketState` / `ShortlineOpportunities` / `TradePlans`
    * 三页则连定时器都没有 —— 收到 `useMarketAutoRefresh` 一处，四页行为对齐。
@@ -792,10 +803,19 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
           const cp = s?.position_cap_pct ?? chain?.market?.position_cap_pct ?? null;
           const co = s?.can_open_position ?? chain?.market?.can_open_position ?? null;
           const cb = s?.composite ?? chain?.market?.composite ?? null;
+          // 🔴 can_open_position 是三态：null = 算不出来（不给仓位上限），
+          //    旧的两态写法把 null 与 false 合并成一句「不可开新仓」，会把「不知道」
+          //    变成一条禁止性结论；下面统一走三态纯函数，别再复制旧的模板字符串。
+          const canOpen = canOpenLabel(co);
           return ph
-            ? `市场状态：${ph} · ${cb} 分 · 仓位上限 ${cp == null ? "不设" : `${cp}%`} · ${co ? "可开新仓" : "不可开新仓"}\n`
+            ? `市场状态：${ph} · ${cb} 分 · 仓位上限 ${cp == null ? "不设" : `${cp}%`} · ${canOpen}\n`
             : "市场状态：没算出来\n";
         })()
+        + (mkt ? "" : "⚠️ 市场状态这一路本次没取到：下面的读数可能来自机会链的简版（闸门不全、仓位上限偏宽）或干脆缺失，不要当作完整判断。\n")
+        + (errors.length ? `本轮取数失败：${errors.join("；")}\n` : "")
+        + (gaps.length ? `数据缺口：${gaps.join("；")}\n` : "")
+        + (notes.length ? `降级提示：${notes.join("；")}\n` : "")
+        + (staleNote ? `${staleNote}\n` : "")
         + `此刻：涨停 ${chain?.live?.limit_up ?? "—"} / 炸板 ${chain?.live?.broken ?? "—"} / 封板率 ${pct0(chain?.live?.seal_rate)}，赚钱效应 ${chain?.live?.money_effect ?? "—"}%\n`
         + (day ? `板块宽度：${day.boards.map((b) => `${b.name}(${b.state}·上涨${pct0(b.up_rate)}·超额${b.rel_width_delta_pp == null ? "—" : signed(b.rel_width_delta_pp, 1) + "pp"})`).join("；")}\n` : "板块宽度没取到\n")
         + (chain ? `题材：${chain.sectors.map((s) => `${s.tag}(${s.state}·${s.today}只·最高${s.highest}板·龙头${s.leaders[0]?.name ?? "—"}·封单${s.leaders[0]?.seal_ratio ?? "—"}%)`).join("；")}\n` : "题材没取到\n")
@@ -819,15 +839,10 @@ export function Opportunity({ embedded = false }: { embedded?: boolean } = {}) {
     );
   }
 
-  const gaps = [...(day?.gaps ?? []), ...(chain?.gaps ?? [])];
-  const notes = [...(day?.notes ?? []), ...(chain?.notes ?? [])];
+  // gaps / notes / staleDims / staleNote 已上移到 useAiPage 之前（界面与 AI 上下文共用一份）。
   const trading = isMarketTrading("CN");
   const { minutes } = cnClock();
   const leftMin = trading ? Math.max(0, (minutes <= 11 * 60 + 30 ? 11 * 60 + 30 : 15 * 60) - minutes) : null;
-
-  // 市场状态数据不是当日 → 明确说出来，别让盘中判断踩在隔夜数据上
-  const staleDims = mkt?.signal.stale_dimensions ?? [];
-  const staleNote = staleDims.length ? `这些维度不是当日数据：${staleDims.join("、")}` : null;
 
   /**
    * 🔴 `settled=false` 有两种完全不同的情况：**真的在盘中**，以及**还没开盘**。

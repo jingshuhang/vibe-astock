@@ -19,6 +19,7 @@
 import { useEffect, useRef } from "react";
 
 import { isMarketTrading } from "@/lib/marketSymbol";
+import { shouldRefreshOnVisible, shouldTickOnInterval } from "./marketRefreshPolicy";
 
 export const REFRESH_MS = 120_000;
 
@@ -40,7 +41,8 @@ export function useMarketAutoRefresh(opts: {
   useEffect(() => {
     if (!enabled) return;
     const timer = window.setInterval(() => {
-      if (!document.hidden && isMarketTrading("CN")) tick.current();
+      // 判据与补刷共用一份纯函数,免得「定时器那一拍」和「切回前台那一拍」慢慢漂移。
+      if (shouldTickOnInterval({ hidden: document.hidden, trading: isMarketTrading("CN") })) tick.current();
     }, intervalMs);
     return () => window.clearInterval(timer);
   }, [enabled, intervalMs]);
@@ -48,8 +50,13 @@ export function useMarketAutoRefresh(opts: {
   useEffect(() => {
     if (!enabled) return;
     const onVisible = () => {
-      if (document.hidden || !isMarketTrading("CN")) return;
-      if (Date.now() - (loadedAt ?? 0) < intervalMs) return;
+      if (!shouldRefreshOnVisible({
+        hidden: document.hidden,
+        trading: isMarketTrading("CN"),
+        loadedAt,
+        now: Date.now(),
+        intervalMs,
+      })) return;
       tick.current();
     };
     document.addEventListener("visibilitychange", onVisible);

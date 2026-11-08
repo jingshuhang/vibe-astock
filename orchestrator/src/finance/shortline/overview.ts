@@ -366,10 +366,21 @@ export function deriveOverviewMarketState(
   const bf = { rows: (boardFlow.data?.all_net_yi ?? []).map((net_yi) => ({ net_yi })) };
   const signal = deriveMarketSignal(bd, res, bf, gateData ?? null, { provenance: provenance ?? null, event: event ?? null });
   const view = buildMarketStateView(signal, bd, res, gateData ?? null);
+  // 🔴 部分数据不许报 `ok`。breadth 缺档会被补齐成 0 后照常进 scoreMarket，
+  //    resonance / boardFlow 缺腿则让「赚钱效应」按中性补位 —— 这些是「算出来了但少看了东西」，
+  //    不是「数据齐」。旧判据只看 `signal.unavailable`（仅全空时非空），于是 partial 一路被吞成 ok，
+  //    连 extract() 刚补的那句「别当成一家都没有」也丢在这里。现在状态与 note 都跟着块状态走。
+  const gaps = [
+    breadth.status === "partial" ? (breadth.note ?? "涨跌分布只取到部分分档") : "",
+    resonance.status !== "ok" ? (resonance.note ?? "板块共振数据不完整") : "",
+    boardFlow.status !== "ok" ? (boardFlow.note ?? "板块资金流数据不完整") : "",
+  ].filter(Boolean);
   const status: BlockStatus = !b
     ? breadth.status === "failed" ? "failed" : "empty"
-    : signal.unavailable ? "empty" : "ok";
-  return { status, data: view, note: signal.unavailable ?? undefined };
+    : signal.unavailable ? "empty"
+      : gaps.length ? "partial" : "ok";
+  const note = signal.unavailable ?? (gaps.length ? gaps.join("；") : undefined);
+  return { status, data: view, note };
 }
 
 /** 简单中文 n-gram 词频:从给定文本里抽取 2-4 字中文片段,过滤停用字与纯数字/标点 */

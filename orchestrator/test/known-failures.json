@@ -2,13 +2,13 @@
   "_comment": "本机既有失败基线。由 scripts/test-delta.mjs --update-baseline 生成。门禁只认 file+name;cause 是给人看的归类(env-*=环境性换机即绿,code-*=真实代码问题待修)。flaky:true 的条目偶发失败,本轮通过也不移除。",
   "generatedAt": "2026-11-01T10:33:03.644Z",
   "count": 45,
-  "flakyCount": 5,
+  "flakyCount": 4,
   "byCause": {
     "env-symlink": 19,
     "env-platform": 8,
-    "code-or-unclear": 2,
+    "code-or-unclear": 3,
     "env-spawn": 5,
-    "flaky-load": 2,
+    "flaky-load": 1,
     "env-sandbox": 4,
     "env-no-ai": 4,
     "env-network": 1
@@ -199,9 +199,11 @@
     {
       "file": "service_api_mcp.test.ts",
       "name": "断开 /debate 取数请求会结束子进程，不继续取下一源或创建空辩论",
-      "cause": "flaky-load",
-      "flaky": true,
-      "err": "(并行跑红、单独复跑通过:负载相关,不是回归)"
+      "cause": "code-or-unclear",
+      "flaky": false,
+      "err": "(人工复核推翻:单跑仍红,不是负载偶发;原始错误文本待实机补录)",
+      "reviewedAt": "2026-11-08T12:23:16.490Z",
+      "reviewNote": "2026-11-07 人工复核:单跑仍红(not ok 8),不是负载偶发;撤销 flaky 并退回待查,原因留待下轮实机定位"
     },
     {
       "file": "service_api_mcp.test.ts",
@@ -289,5 +291,6 @@
       "cause": "env-sandbox",
       "err": "'取不到当前用户 SID'"
     }
-  ]
+  ],
+  "lastReviewedAt": "2026-11-08T12:23:16.490Z"
 }

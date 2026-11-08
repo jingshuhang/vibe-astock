@@ -164,7 +164,7 @@ function BoardFlowTable({ rows }: { rows: BoardFlowRow[] }) {
 
 
 /** 市场状态信号(盯盘页内嵌版):复用「市场状态信号」独立页的 CompositeBadge / ScoreRing 渲染,与独立页同一套信号与容错 */
-function MarketStateOverviewPanel({ d }: { d: MarketStateResult }) {
+function MarketStateOverviewPanel({ d, note }: { d: MarketStateResult; note?: string }) {
   const { signal, dimensions, recommendation } = d;
   const stale = new Set(signal.stale_dimensions ?? []);
   return (
@@ -215,6 +215,8 @@ function MarketStateOverviewPanel({ d }: { d: MarketStateResult }) {
           事件面:{signal.event_detail.note} · 新闻联播标题词频，权重封顶 8%，别单独拿它推仓位
         </p>
       )}
+      {/* 块级缺口：源数据只取到一部分时，后端会把「哪些分档是补齐的 0」写进 block.note */}
+      {note && <p className="text-[11px] text-warning">{note}</p>}
       {d.notes.length > 0 && <p className="text-[11px] text-warning">{d.notes.join(";")}</p>}
     </div>
   );
@@ -296,7 +298,7 @@ function BlockBody({ kind, block }: { kind: keyof OverviewView; block: OverviewB
   if (kind === "sectors" && d && Array.isArray((d as { rows?: SectorRow[] }).rows)) return <SectorTable rows={(d as { rows: SectorRow[] }).rows} />;
   if (kind === "resonance" && d && Array.isArray((d as { rows?: ResonanceRow[] }).rows)) return <ResonanceTable rows={(d as { rows: ResonanceRow[] }).rows} scope={(d as { scope: string }).scope} />;
   if (kind === "boardFlow" && d && Array.isArray((d as { rows?: BoardFlowRow[] }).rows)) return <BoardFlowTable rows={(d as { rows: BoardFlowRow[] }).rows} />;
-  if (kind === "marketState" && d) return <MarketStateOverviewPanel d={d as MarketStateResult} />;
+  if (kind === "marketState" && d) return <MarketStateOverviewPanel d={d as MarketStateResult} note={block.note} />;
   if (kind === "marketEventTrend" && d) return <EventTrendPanel d={d as EventTrend} />;
   return <p className="text-[13px] text-muted-foreground">无数据</p>;
 }

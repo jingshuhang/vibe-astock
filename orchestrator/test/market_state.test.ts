@@ -295,6 +295,39 @@ describe("deriveMarketSignal", () => {
     assert.ok(Array.isArray(signal.phase_reasons));
   });
 
+  /**
+   * `sources` 是**声明式清单**，不是「本次实际命中核对」。
+   * 拿「一路都没取到」去调，它照样列全六路 —— 这条测试就是把这个事实钉住，
+   * 免得以后有人拿它当证据链、或反过来把它改成一份拼凑出来的「命中列表」。
+   */
+  it("sources 是预期取数来源：算不出来时也不缩水，别当成命中核对", () => {
+    const full = deriveMarketSignal(
+      { limit_up: 30, limit_down: 5, up: 1200, down: 800, flat: 200 },
+      { rows: [{ resonance_rate: 0.6 }] },
+      { rows: [{ net_yi: 1e9 }] },
+    );
+    const unavailable = deriveMarketSignal({}, {}, {});
+    assert.equal(full.sources.length, 6);
+    assert.equal(unavailable.unavailable !== null, true, "前提：这一支确实算不出来");
+    assert.deepEqual(unavailable.sources, full.sources, "声明式清单不随本次取数结果变化");
+    assert.ok(full.sources.some((s) => s.includes("em_market_breadth")));
+  });
+
+  /**
+   * ⚠️ 这条是**记录现状**，不是认可现状正确：`data_as_of` 装的是 `fetched_at` 的日期，
+   * 内容可能属于上一交易日。改成真实归属日要逐路解析 envelope，等 2026-11-09 盘中
+   * 实机取证后再动判据；届时这条测试也要跟着改，别拿它当「设计意图」的挡箭牌。
+   */
+  it("data_as_of 目前是取数日期：今天取的昨收内容不会被判陈旧（已知局限，待实机）", () => {
+    const s = deriveMarketSignal(
+      { limit_up: 30, limit_down: 5, up: 1200, down: 800, flat: 200 },
+      {}, {}, null,
+      { provenance: { breadth: `${TODAY}T09:00:00+08:00` } },
+    );
+    assert.equal(s.data_as_of.breadth, TODAY, "取数日期来自 fetched_at，不是内容归属日");
+    assert.deepEqual(s.stale_dimensions, [], "近似判据：取数日期是今天，就不标陈旧");
+  });
+
   it("limit_up < 10 时应判为冰点期", () => {
     const signal = deriveMarketSignal({ limit_up: 5, limit_down: 2, up: 500, down: 1000, flat: 100 }, {}, {});
     assert.equal(signal.phase, "冰点期");

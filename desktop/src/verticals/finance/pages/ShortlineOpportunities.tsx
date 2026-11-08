@@ -146,7 +146,7 @@ export function TrackCard({ t, loading, why }: { t: OpportunityTrackResult | nul
                           {measured
                             ? <b>{(measured.win_rate! * 100).toFixed(1)}%</b>
                             : <span className="text-muted-foreground/60">实测 —</span>}
-                          <span className="text-muted-foreground"> (n={cell?.sample ?? 0})</span>
+                          <span className="text-muted-foreground"> (n={cell?.sample ?? "—"})</span>
                         </div>
                         <div className="font-mono tabular-nums text-muted-foreground">
                           先验 {(prior.win * 100).toFixed(1)}% (n={prior.n})
@@ -375,7 +375,7 @@ export function ShortlineOpportunities() {
                     {/* 置信度来自实证查表(环境×模式历史胜率);没佐证时退回后端的模式分并标灰 */}
                     {prior
                       ? <span className={cn("rounded bg-muted/20 px-1.5 py-0.5 font-mono tabular-nums", prior.confidence >= 70 ? "text-primary" : prior.avg < 0 ? "text-warning" : "text-muted-foreground")}>{prior.category}·{prior.regime} 置信{prior.confidence}</span>
-                      : <span className="text-muted-foreground/60">置信(未佐证):{o.pattern?.confidence ?? 0}</span>}
+                      : <span className="text-muted-foreground/60">置信(未佐证):{o.pattern?.confidence ?? "—"}</span>}
                     {prior?.seal_bucket && <span className="text-muted-foreground">封板:{prior.seal_bucket}</span>}
                     {prior?.in_main_sector && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">板块共振</span>}
                     {o.open_count > 0 && <span className="text-muted-foreground">开板:{o.open_count}次</span>}

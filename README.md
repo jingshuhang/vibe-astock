@@ -369,6 +369,12 @@ A 股最多查 30 只，持有的优先。某个来源没取到会列在「没�
 
 **刻意不合并成一张表**：统一数值会改变真实取数频率（可能把 15s 放宽到 30s，也可能把 300s 收紧到 20s 而打爆上游），那是需要盘中实机验证的行为变更，不能顺手做。改任一侧都要核对另一侧；`orchestrator/test/ttl_declarations.test.ts` 钉住了 `min` 语义、端点 id 不拼错、以及「缺省不是不限」这条已修口径。182 个端点里 54 个有声明、128 个没有 —— 没声明的那批落 2 分钟兜底，**不是「没有时效」**。
 
+### 市场状态页的「预期取数来源」与「取数日期」
+
+页面上那份六路来源清单（`MarketSignal.sources`）是**声明式**的：写的是本页设计上会取哪六路，不是「这次全取到了」。某一路失败、用缓存或由备源顶上时它照样列着 —— 本次缺口看同页的「降级提示」/`notes`，要审计实际命中源看 envelope.evidence 的 `source`。喂给 AI 的上下文也带同一句限定，别把它当证据链。
+
+`data_as_of` 名字沿用旧称，装的是**取数日期**（`fetched_at` 截出的 YYYY-MM-DD），不是内容的数据归属日：开盘前重取昨收类内容时，取数日期是今天而内容是上一交易日的，此刻不会被标「陈旧」。事件维度的环另用《新闻联播》播出日期判定，不靠这张表。改成真实归属日要逐路解析 envelope 的 `as_of` / `record_key`，属行为变更，**待 2026-11-09 盘中实机取证后再动**；在此之前别把它当归属日引用。
+
 端点目录见 [datasources/CATALOG.md](datasources/CATALOG.md)。
 
 ## 支持的 AI
@@ -727,8 +733,13 @@ Windows 上把 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`。
 
 - `--update-baseline` 仍会用当前所有失败覆盖基线，但**只要本轮有不在旧基线里的新增失败就拒绝写入**（退出码 1，逐条打印清单）。确认是环境性 / 既有问题后才加 `--force`，输出里会记「本次收编 N 条」供事后复核。
 - `--flaky "文件::用例名"` 在基线里没匹配到时，旧版会凭空新增一条 `flaky:true`，不验证文件是否存在、也不跑测试。现在默认拒绝；只有显式 `--allow-new`、且 `test/` 下真有这个文件才登记。报告里「可标 flaky」的提示也改成带 `--allow-new` 并提醒先单跑复现。
+- `--unflaky "文件::用例名" --reason "复核依据"` 是**反向纠正**：人工复核发现某条被标成 `flaky` 的其实单跑仍红时，用它撤销免检。必须带 `--reason` 且精确匹配 1 条；会把 `flaky-load` 改回 `code-or-unclear`、重写自相矛盾的自动文案、写 `reviewedAt / reviewNote / lastReviewedAt`，**不改 `generatedAt`**（局部复核不伪装成重新生成整份基线）。2026-11-08 用它纠正了 `service_api_mcp.test.ts :: 断开 /debate …`：`flakyCount 5→4`、`byCause` 同步重算、`count` 仍 45。没有这条命令之前，错误标记只能靠整份重建洗掉，而重建又会把它按 `prevFlaky` 焊死。
 
-`--force` / `--allow-new` 是**显式授权，不保证判断正确**：用之前仍要先跑 `node --test test/<文件>` 单跑确认。2026-11-07 复核 45 条基线时发现 1 条 `flaky-load` 单跑仍红（归类失真，待重建时纠正）。`--update-baseline` 的拒绝分支目前只有源码结构断言 + 两条真实子进程测 `--flaky` 拒绝；**没有端到端跑一次全量重建**（要 3–5 分钟且会写真实基线），这条留白写在 `test_delta_guard.test.ts` 注释里。
+`--force` / `--allow-new` 是**显式授权，不保证判断正确**：用之前仍要先跑 `node --test test/<文件>` 单跑确认。`npm run test:baseline --prefix orchestrator` 等价于**不带** `--force` 的重建，本轮有新增失败就会拒绝写入（这是有意的默认）；确认要收编时透传参数：`npm run test:baseline --prefix orchestrator -- --force`。别把 `--force` 写死进 npm script —— 那等于又开一个一键洗回归的入口。
+
+⚠️ 报告里的「✅ 已修复 N 条」只是**按本轮是否通过自动判定**，不等于人工结论：2026-11-08 它把 `service_api_mcp.test.ts :: 断开 /debate …` 判成已修复，但 11-07 人工复核记的是「单跑仍红」，当天单跑又变 `ok 8`。这种间歇条目**先别照提示跑 `--update-baseline`**（本轮通过 + `flaky:false` 会让它被移除），等实机取证确认稳定再收编；基线里那条带日期的复核记录按历史原样保留，不改写、不手改生成物。
+
+`--update-baseline` 的拒绝分支目前只有源码结构断言 + 两条真实子进程测 `--flaky` 拒绝；**没有端到端跑一次全量重建**（要 3–5 分钟且会写真实基线），这条留白写在 `test_delta_guard.test.ts` 注释里。
 
 最近本机验收记录（2026-10-18，v2.1.2 发布前，macOS）：
 

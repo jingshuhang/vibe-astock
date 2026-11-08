@@ -56,7 +56,11 @@ import { boardFlowNetRows, num, parseResonance } from "./scoring_inputs.ts";
 /** 闸门输入（主升期判定用）。名字沿用旧称，避免 overview 等调用方改动。 */
 export type MarketGateData = MarketGateInput;
 
-/** 各来源的取数时间（ISO 或日期），用于给分项打时间戳、识别陈旧数据 */
+/**
+ * 各来源的**取数时间**（ISO 或日期），用于给分项打时间戳、识别陈旧数据。
+ * 🔴 是取数时间,不是数据归属日:盘前/盘中重取昨收类内容时,两者会差一个交易日。
+ *    当前 `data_as_of` 就是由这里截日期得来的,见该字段的说明。
+ */
 export interface MarketProvenance {
   breadth?: string | null;
   resonance?: string | null;
@@ -109,7 +113,12 @@ export interface MarketSignal {
   weights: EffectiveWeights | null;
   /** 算不出来时的原因；null = 算得出来 */
   unavailable: string | null;
-  /** 数据来源说明（只放来源，不放降级提示 —— 提示走 notes） */
+  /**
+   * **预期**取数来源（声明式清单,不是「本次实际命中核对」）。
+   * 某一路取数失败、走缓存或由备源顶上时,这里照样列出原端点名;
+   * 哪几路没取到 / 降级走 `notes`,真要审计本次命中源看 envelope.evidence 里的 `source`。
+   * 只放来源,不放降级提示 —— 混进去会让人以为「取数失败」也是一种数据来源。
+   */
   sources: string[];
   /** 取数降级提示（可选数据缺失等）；算得出来时也可能非空 */
   notes: string[];
@@ -121,7 +130,14 @@ export interface MarketSignal {
   gate_items: GateItem[];
   /** 阶段被压下来的原因（空 = 没被压） */
   phase_reasons: string[];
-  /** 各来源的数据日期（YYYY-MM-DD）；缺数据的为 null */
+  /**
+   * 各来源的**取数日期**（YYYY-MM-DD,由 `fetched_at` 截出）；缺数据的为 null。
+   * 🔴 字段名沿用旧称,但**不是数据归属日**:盘前/盘中重取昨收类内容时,
+   *    取数日期是今天而内容是上一交易日的。`staleness()` 拿它做「是否当日」的近似判据;
+   *    事件维度前端另用《新闻联播》播出日期判定,不靠这里。
+   *    改成真实归属日需要逐路拿 envelope 的 `as_of` / `record_key`,
+   *    待 2026-11-09 盘中实机取证后再动判据 —— 在这之前别把它当归属日引用。
+   */
   data_as_of: Record<string, string | null>;
   /** 数据不是当日的维度名（emotion / dragon / risk / earning / event） */
   stale_dimensions: string[];
@@ -178,7 +194,16 @@ interface BreadthData {
 
 // ─── 常量 ───────────────────────────────────────────────────────────────────────
 
-const SOURCES = [
+/**
+ * 本端点**设计上**会取的六路来源 —— 声明式清单,不是本次实际命中核对。
+ *
+ * 🔴 2026-11-08 盘点:页面「数据来源」和喂给 AI 的上下文原来直接把这份常量当
+ *    「这次取到了这些源」读。其实某一路失败 / 走缓存 / 由备源顶上时,它照样列全六路,
+ *    于是缺口被一份永远完整的清单盖住了。现在名字与调用方文案都写明「预期」。
+ *    不改成动态命中列表,是因为 `deriveMarketSignal` 拿不到逐路 envelope,硬凑一份
+ *    会变成新的伪造;真要审计命中源,走 envelope.evidence 的 `source`(见 mappers.py)。
+ */
+const DECLARED_SOURCES = [
   "东财涨跌分布(em_market_breadth)",
   "东财板块共振(em_industry_comparison)",
   "新浪板块资金流(sina_board_flow)",
@@ -332,6 +357,12 @@ export function breadthUsable(b: BreadthData): boolean {
  *
  * 🔴 为什么要这个：赚钱效应连续两天 49 分，看的人无从判断那是「市场真没变」还是
  *    「快照没刷新」。标出来，才知道该去点「重新取数」还是该接受这个读数。
+ *
+ * ⚠️ 已知局限（2026-11-08 盘点，判据本轮**不动**）：这里比较的是各路 `fetched_at`
+ *    的日期，即「什么时候取的」，不是内容的数据归属日。开盘前重取昨收类内容时，
+ *    取数日期是今天、内容却是上一交易日的，此刻不会被标陈旧。前端事件环因此另用
+ *    《新闻联播》播出日期判定。改成真实归属日需逐路解析 envelope 的 as_of / record_key，
+ *    等 2026-11-09 盘中实机取证后再动 —— 不凭静态推断改判据。
  */
 function staleness(
   provenance: MarketProvenance | null,
@@ -415,7 +446,7 @@ export function deriveMarketSignal(
       emotion_score: null, dragon_score: null, risk_score: null, earning_score: null,
       event_score: event?.score ?? null, event_detail: event, weights: null,
       unavailable: "没取到涨跌分布（涨跌家数一家都没有），算不出市场状态；因此不给仓位上限",
-      sources: [...SOURCES], notes: [], gate_blockers: [], gate_unknown: [], gate_items: [], phase_reasons: [],
+      sources: [...DECLARED_SOURCES], notes: [], gate_blockers: [], gate_unknown: [], gate_items: [], phase_reasons: [],
       data_as_of: fresh.data_as_of, stale_dimensions: [], derived_at: stamp,
     };
   }
@@ -502,7 +533,7 @@ export function deriveMarketSignal(
     event_detail: event,
     weights: dims.weights,
     unavailable: null,
-    sources: [...SOURCES],
+    sources: [...DECLARED_SOURCES],
     notes,
     gate_blockers: dims.gate.blockers,
     gate_unknown: dims.gate.unknown,

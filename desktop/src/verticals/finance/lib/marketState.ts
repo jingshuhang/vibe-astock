@@ -180,3 +180,17 @@ export const PHASE_COLORS: Record<string, string> = {
 export function weightPct(w: number | null | undefined): string {
   return w == null ? "—" : `${Math.round(w * 100)}%`;
 }
+
+/**
+ * 「能不能开新仓」的**三态**文案 —— 界面与给 AI 的上下文共用一份。
+ *
+ * 🔴 `null` = 算不出来（连仓位上限都不设），**不是**「不可开新仓」。
+ *    机会发现页给 AI 的上下文以前写成 `${co ? "可开新仓" : "不可开新仓"}`，
+ *    把「不知道」压成一条禁止性结论 —— 模型会把它当成真实的市场判断继续往下推。
+ *    独立页 `CompositeBadge` 一直是对的（三态），这里抽出来让两处不再漂移。
+ */
+export function canOpenLabel(v: boolean | null | undefined): string {
+  if (v === true) return "可开新仓";
+  if (v === false) return "暂不开新仓";
+  return "能不能开新仓：不知道（算不出来）";
+}
