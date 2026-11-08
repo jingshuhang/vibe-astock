@@ -149,6 +149,17 @@ export const DIMENSION_LABELS = {
   event: { label: "事件", hint: "越高越偏多" },
 } as const;
 
+/**
+ * 🔴 这是**独立的风险等级徽标**,不是五维评分之一,别拿它跟「抗跌度」并着读。
+ *    它与 `risk_score` 同源但方向相反:抗跌度分越高越安全 → 徽标越靠近「低风险」;
+ *    分越低越危险 → 越靠近「极高风险」。同一屏上「抗跌度 15」旁边写着「极高风险」
+ *    是一致的,反倒是「低风险 + 抗跌度低」才该怀疑数据。
+ *    最容易读反的是把「低风险」当成「抗跌度低」,所以徽标一律带 title,页面再写一行同源说明。
+ *    只补说明,**四档的 label / 配色 / 判定条件一个都不改**。
+ */
+export const RISK_LEVEL_HINT =
+  "风险等级是独立徽标，不是五维评分之一；与「抗跌度」方向相反：抗跌度分越低越危险，这里越靠近「极高风险」。";
+
 export const RISK_LEVEL_META: Record<RiskLevel, { label: string; tone: string }> = {
   low: { label: "低风险", tone: "text-emerald-600 bg-emerald-50 border-emerald-200" },
   medium: { label: "中风险", tone: "text-amber-600 bg-amber-50 border-amber-200" },

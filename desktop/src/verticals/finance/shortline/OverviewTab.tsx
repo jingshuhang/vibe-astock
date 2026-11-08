@@ -43,7 +43,15 @@ function IndexTable({ rows }: { rows: IndexRow[] }) {
   );
 }
 
-function BreadthBody({ d }: { d: BreadthSummary }) {
+function BreadthBody({ d, note }: { d: BreadthSummary; note?: string }) {
+  /**
+   * 🔴 后端已经把「一家都没解析出来」标成 empty、不再返回对象；这里是第二道防线：
+   *    旧后端 / 缓存里的旧响应仍可能给出六个 0。全 0 时**绝不画成六个读数** ——
+   *    「涨停 0 / 上涨 0」看着像全市场冰点，真相只是这一轮没取到。
+   */
+  if (d.limit_up + d.limit_down + d.up + d.down + d.flat === 0) {
+    return <p className="text-[13px] text-muted-foreground">{note ?? "涨跌分布这一轮没取到家数，不显示占位 0。"}</p>;
+  }
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -55,6 +63,7 @@ function BreadthBody({ d }: { d: BreadthSummary }) {
         <StatTile label="成交额" value={d.turnover_yi == null ? "—" : `${d.turnover_yi.toFixed(0)} 亿`} />
       </div>
       <p className="text-[11px] text-muted-foreground">{d.scope}</p>
+      {note && <p className="text-[11px] text-warning">{note}</p>}
     </div>
   );
 }
@@ -168,7 +177,7 @@ function MarketStateOverviewPanel({ d }: { d: MarketStateResult }) {
         <ScoreRing value={dimensions.earning.score} color="#3b82f6" label={DIMENSION_LABELS.earning.label} hint={DIMENSION_LABELS.earning.hint} weight={dimensions.earning.weight} asOf={dimensions.earning.as_of} stale={stale.has("earning")} />
         <ScoreRing value={dimensions.event.score} color="#8b5cf6" label={DIMENSION_LABELS.event.label} hint={DIMENSION_LABELS.event.hint} weight={dimensions.event.weight} asOf={dimensions.event.as_of} stale={dimensions.event.stale ?? stale.has("event")} />
       </div>
-      <p className="text-[11px] text-muted-foreground">五维都是 0–100 分，分越高越正面；「抗跌度」原名「风险」，量的是安全度，分低才是危险。</p>
+      <p className="text-[11px] text-muted-foreground">五维都是 0–100 分，分越高越正面；「抗跌度」原名「风险」，量的是安全度，分低才是危险。上方「低/中/高/极高风险」是独立徽标，方向相反：分越低越危险。</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         <span>建议:<b className="text-foreground">{recommendation.action}</b></span>
         <span>仓位上限:{recommendation.position_range}</span>
@@ -282,7 +291,7 @@ function BlockBody({ kind, block }: { kind: keyof OverviewView; block: OverviewB
   }
   const d = block.data;
   if (kind === "indices" && d && Array.isArray((d as { rows?: IndexRow[] }).rows)) return <IndexTable rows={(d as { rows: IndexRow[] }).rows} />;
-  if (kind === "breadth" && d) return <BreadthBody d={d as BreadthSummary} />;
+  if (kind === "breadth" && d) return <BreadthBody d={d as BreadthSummary} note={block.note} />;
   if (kind === "shortline" && d && typeof d === "object") return <ShortlineBody d={d as Record<string, unknown>} />;
   if (kind === "sectors" && d && Array.isArray((d as { rows?: SectorRow[] }).rows)) return <SectorTable rows={(d as { rows: SectorRow[] }).rows} />;
   if (kind === "resonance" && d && Array.isArray((d as { rows?: ResonanceRow[] }).rows)) return <ResonanceTable rows={(d as { rows: ResonanceRow[] }).rows} scope={(d as { scope: string }).scope} />;

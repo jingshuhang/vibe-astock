@@ -9,6 +9,25 @@
 
 ### 修复
 
+- **先纠正一次自己的误判：`cache_max_age_sec` 一直生效，不是「静默失效」**（2026-11-08 全项目盘点）。
+  - 上一轮 P2 写「逐端点 TTL 覆盖率 18/182」，本轮盘点一度进一步判成「registry 的 54 个声明没有任何代码读取、以为设了时效实际静默失效」—— **错的**。`service.ts` 一直把 `ep.cache_max_age_sec * 1000` 作为 `endpointMaxAgeMs` 传给 `snapshotUsable`，后者与调用方 `consistency.max_age_ms` 取 `Math.min`，注册表是**调用方放宽不了的硬上限**。那次只 grep 了 `finance/`，没扫全仓就下结论。
+  - 真问题是**两套声明分叉**：`finance/snapshot_ttl.ts` 的 18 项（视图调用方意图）与注册表 54 项（硬上限）重叠 11 项、8 项数值不同（`cn_shortline_live` 30s/15s、`tx_quotes_batch` 20s/300s、`em_market_breadth` 60s/120s…），且 `registry.ts` 字段注释还写着「缺省 = 不限」—— 那是 Core 加 2 分钟兜底之前的口径。
+  - 修法：**不动任何运行时数值**。把两张表并成一张会改变真实取数频率（可能把 15s 放宽到 30s，也可能把 300s 收紧到 20s 打爆上游），属于需要盘中实机验证的行为变更，不能顺手做。改 `registry.ts` / `snapshot_ttl.ts` 注释写清优先级与分叉清单，README 新增「快照时效」一节；新增 `ttl_declarations.test.ts` 5 条，用真 `snapshotUsable` 钉住 `min` 语义、`0 = 从不缓存`、表外端点落 2 分钟兜底、TS 表 18 个 id 都对应真实端点（拼错会静默落兜底），以及 `service.ts` 的接线不许被删。
+  - 本文件 11-06 事故条目里那句「这道保险其实从未生效」指的是**事故当时端点表还没建**，不是说代码不读注册表；保留原文，在这里更正读法。
+- **涨跌分布一家都没取到时，页面把六个计数画成「涨停 0 / 上涨 0」**（同一轮盘点，全项目最后一处占位 0 漏网）。
+  - `breadthFrom()` 已经会返回 `null` 来区分「没取到」和「真的 0 家」，但 `overview.ts:extractBreadth()` 用 `?? 0` 把六个计数填满 → `extract()` 拿到非 null 的 data、块状态报 `ok` → 前端 `BreadthBody` 用 `String(d.limit_up)` 显示。同一屏短线情绪是实时读数，看着像全市场冰点。**不报错，只给错答案。**
+  - 评分侧原本没被带偏：`breadthUsable()` 检查家数总和 > 0，全 0 会走「算不出来」。但显示层仍是假的，且 `partial` 缺档时那几个 0 也没有说明。
+  - 修法：`extractBreadth()` 返回 `BreadthSummary | null`；`extract()` 把全空标成 `empty` 并写明「不是 0 家」，`partial` 补一句「没取到的分档显示为 0，别当成一家都没有」，note 透传到前端；`BreadthBody` 再加一道前端守卫（六个计数全 0 时不画读数，兼容旧后端 / 旧缓存）。新增 `overview_breadth.test.ts` 4 条，真跑 `shortlineOverviewAct`（注入假取数、不联网）覆盖全空 / 有数据 / 部分数据三态 + 前后端结构断言。
+- **风险等级徽标与五维「抗跌度」方向相反，并排时没说明**（同一轮盘点）。
+  - `riskLevelOf()` 与 `risk_score` 同源，但徽标「低风险 / … / 极高风险」和「抗跌度 0–100 越高越安全」是两套坐标系：「抗跌度 15 + 极高风险」是一致的，反倒「低风险 + 抗跌度低」才该怀疑数据。最容易读反的是把「低风险」当成「抗跌度低」。
+  - 修法：只补说明、不动判据 —— `lib/marketState.ts` 导出单一真源 `RISK_LEVEL_HINT`，徽标加 `title`、下方加可见一行，独立页与盯盘内嵌版共用；四档 label / 配色 / 判定条件一字未改。`market_state_labels.test.ts` 补 1 条（5/5）。
+- **增量门禁两处能把真回归「洗」进基线的口子**（同一轮盘点；2026-11-07 只记录、未改）。
+  - `--update-baseline` 用当前所有失败覆盖基线、无二次确认；`--flaky "文件::用例名"` 匹配不到时凭空新增 `flaky:true`，既不验证文件存在也不跑测试。报告里「可标 flaky」的提示配后者，是把一条真实回归变成永久免检项的最短路径。
+  - 修法：重建基线前算 `newcomers`（不在旧基线的本轮失败），非空且无 `--force` 就退出 1 并逐条打印；`--force` 时输出「本次收编 N 条」。`--flaky` 新增必须显式 `--allow-new`，且校验 `test/` 下真有该文件；顺便复用一次读出的 `prevEntries`，不再重复解析基线。报告里的提示改成带 `--allow-new` 并提醒先单跑复现。
+  - 回归：`test_delta_guard.test.ts` 从 3 条扩到 6 条，其中 2 条用真实子进程证明「拼错 → 退出 2 且基线一个字节都没动」「给了 `--allow-new` 但文件不存在 → 仍拒绝」。**诚实留白**：`--update-baseline` 的拒绝分支只有源码结构断言，没端到端跑一次全量重建（要 3–5 分钟且会写真实基线）。
+- **本轮验证**：前后端 `tsc --noEmit` 均 0 错；orchestrator 定向 7 个文件 **88 条 / 87 通过**（唯一失败是 Windows 沙箱无符号链接权限的 `EPERM symlink` 既有基线）、`core_purity.test.ts` 在其中仍绿；desktop `market_state_labels.test.ts` **5/5**；`known-failures.json` 保持 45 条**未被修改**，没有用 `--update-baseline` 掩盖任何失败。
+- **仍未处理的 P2，重新裁决后只剩两条真欠账**：`DailyReview` 无自动刷新（它是收盘档定稿内容，盘中每 2 分钟刷新没有意义，与四个判断页不同 —— **明确不改**，此前列成欠账是没说清）；`release_version.test.ts` 不校验 git tag（校验依赖仓库 tag 状态，CI 上易 flaky，暂不改）。另外三条从欠账里划掉：自动刷新用 `load(false)` 是**特性不是缺陷**（后端按端点 TTL 决定要不要真取，改成强制 `fresh` 会每 2 分钟打一遍上游）；逐端点 TTL「覆盖率 18/182」是**误读**（另有 54 个硬上限 + 2 分钟兜底，见上）；门禁不覆盖 desktop / Python 是 CI 分工，README 已写明。**缺腿压仓分档仍待样本**，不拿 15 份快照装回测。
+
 - **启动日志三行正常信息全标 `[error]`，级别读反了**（2026-11-08，来自用户贴的启动日志）。
   - 现象：`17:44:33 [error] [collector] 盘中常驻采集已启动`、`[error] [api] listening …`、`17:44:48 [error] [notify] …=skipped` —— 一份**成功的**启动日志三行全是错误级别。
   - 根因：`runlog.ts` 把 `console.log → [info]` / `console.error → [error]`，但 `api.ts` 的 listening、`notify.ts:startScheduler` 默认 log、`watch.ts:startAlertCollector` 默认 log 全用 `console.error` 打正常信息。筛不出真错误，人也会被误导（与「风险 15 分被读反」同类）。
@@ -180,7 +199,7 @@
   - **本轮明确没做的范围**（审计 P1/P2，仍是「诚实 / 直观」这条线上的欠账，不影响上述四项结论）：`shortline_overview` GET 丢 `refresh`、`opportunity.ts` 子信号未透传 `refresh`、`watch.ts` collector 锁静默吞删除失败、`Opportunity.tsx` 三源全失败仍刷新 `loadedAt`、逐端点 TTL 覆盖率、README 的 raw 回收口径三处不一致、门禁未覆盖 desktop / Python / CI、新增文件未纳入版本控制。
 
 - 本轮（P1 收口）：前后端 `tsc --noEmit` 均 0 错；定向五处 **88/88**；新增 `desktop/test/opportunity_freshness.test.ts` 2 条、`orchestrator/test/refresh_propagation.test.ts` 4 条、`shortline_collector.test.ts` 真注入删除失败 1 条（断言释放标记 + 显式告警 + 下一台采集器立刻接管，不等 90 秒）；**desktop 全量 450/450**；Python 三套 **1682 passed / 2 failed**（两条 `os.symlink` WinError 1314 权限基线）；**`test-delta.mjs` 无新增失败、退出码 0**（42 条失败全在 45 条基线内，1 条负载偶发单跑通过，`known-failures.json` 保持 45 条未改）。
-- 仍未处理的 P2：逐端点 TTL 覆盖率 18/182；自动刷新多为 `load(false)`、不保证上游真重取；`BreadthBody` 可能把 0 显示成真值；`risk_level` 徽标与「抗跌度」并列仍有读反风险；`DailyReview` 无自动刷新；`release_version.test.ts` 不校验 git tag；门禁未覆盖 desktop / Python（README 已写明分工）。**缺腿压仓分档仍待样本**，不拿 15 份快照装回测。
+- 仍未处理的 P2：逐端点 TTL 覆盖率 18/182；自动刷新多为 `load(false)`、不保证上游真重取；`BreadthBody` 可能把 0 显示成真值；`risk_level` 徽标与「抗跌度」并列仍有读反风险；`DailyReview` 无自动刷新；`release_version.test.ts` 不校验 git tag；门禁未覆盖 desktop / Python（README 已写明分工）。**缺腿压仓分档仍待样本**，不拿 15 份快照装回测。（**2026-11-08 已重新裁决：其中三条已修、三条是误读或设计取舍，以本段开头那条为准；保留原文以存历史。**）
 
 - 本轮（行为测试升级 + 基线复核）：`refresh_propagation.test.ts` 从 4 条纯源码断言扩成 **3 条行为 + 4 条结构** —— 真调 `runView` / `shortlineOverviewAct`（注入假取数、不联网），实测 `refresh:"1"` → 10 次取数全 `fresh`、无参 → 全 `prefer_cache` 且上限均为有限正数；`runView` 原样把 `{refresh:"1",foo:"bar"}` 交给注册视图。新增 `test_delta_guard.test.ts` 3 条。定向 **10/10**、前后端 `tsc --noEmit` 0 错、`test-delta` 无新增失败且退出码 0、`known-failures.json` 保持 45 条未改。
 - 仍未升级为行为测试的三处（诚实留白）：`shortline_overview` 注册闭包接线、机会链子信号 `force`、`day_opportunity` 的 gap 文案 —— 这三处依赖真实取数或 ESM 注入，目前只有源码结构断言，措辞一改就红，但**不能证明运行时真的生效**。实机探针留到下一个交易日。

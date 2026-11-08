@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { DIMENSION_LABELS } from "../src/verticals/finance/lib/marketState.ts";
+import { DIMENSION_LABELS, RISK_LEVEL_HINT, RISK_LEVEL_META } from "../src/verticals/finance/lib/marketState.ts";
 
 const read = (p: string) => readFileSync(new URL(`../src/verticals/finance/${p}`, import.meta.url), "utf8");
 const backend = (p: string) => readFileSync(new URL(`../../orchestrator/src/finance/${p}`, import.meta.url), "utf8");
@@ -51,4 +51,17 @@ test("判据一个字没动:分数公式、字段名、权重都不受影响", (
   assert.ok(score.includes("const riskScore = clamp(100 - (limitDown * 2 + downRate * 100), 15, 100);"), "风险分公式不许改");
   assert.ok(score.includes("risk: Math.round(riskScore)"), "维度 key 仍是 risk");
   assert.ok(score.includes("risk: 0.15"), "名义权重仍是 0.15");
+});
+
+test("风险等级徽标与「抗跌度」方向相反:同源说明 + 悬停提示都到位,四档判据仍未动", () => {
+  const page = read("pages/MarketState.tsx");
+  const tab = read("shortline/OverviewTab.tsx");
+  assert.match(RISK_LEVEL_HINT, /方向相反/);
+  assert.match(RISK_LEVEL_HINT, /抗跌度分越低越危险/);
+  assert.ok(page.includes("title={RISK_LEVEL_HINT}"), "徽标要带悬停说明");
+  assert.ok(page.includes("{RISK_LEVEL_HINT}"), "说明要看得见,不能只藏在 title 里");
+  assert.ok(tab.includes("方向相反"), "盯盘内嵌版也要当场说破");
+  assert.deepEqual(Object.values(RISK_LEVEL_META).map((x) => x.label), ["低风险", "中风险", "高风险", "极高风险"],
+    "四档 label 一个都不许改");
+  assert.equal(Object.keys(RISK_LEVEL_META).length, 4, "不许顺手加档/改判据");
 });

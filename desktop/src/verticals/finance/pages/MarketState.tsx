@@ -7,7 +7,7 @@ import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { cn } from "@/lib/utils";
 import type { MarketStateResult, Dimension } from "@/lib/marketState";
-import { DIMENSION_LABELS, RISK_LEVEL_META, PHASE_COLORS, weightPct } from "@/lib/marketState";
+import { DIMENSION_LABELS, RISK_LEVEL_META, RISK_LEVEL_HINT, PHASE_COLORS, weightPct } from "@/lib/marketState";
 /** 四档徽标配色 / 触发比较符 / 读数行:统一在 lib/marketCall,与每日复盘页共用一份 */
 import { CALL_COLORS, OP_LABEL, METRIC_LABEL, readingsText, type MarketCallView } from "@/lib/marketCall";
 
@@ -111,7 +111,7 @@ export function CompositeBadge({ signal }: { signal: MarketStateResult["signal"]
         <span className="max-w-xl text-center text-[11px] text-muted-foreground">{squeezeNote}</span>
       )}
       <div className="flex flex-wrap justify-center gap-2 text-xs">
-        {risk && <span className={cn("rounded-full border px-2 py-0.5", risk.tone)}>{risk.label}</span>}
+        {risk && <span className={cn("rounded-full border px-2 py-0.5", risk.tone)} title={RISK_LEVEL_HINT}>{risk.label}</span>}
         {signal.can_open_position === true
           ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-700">
             可开新仓（上限 {signal.position_cap_pct}%）
@@ -120,6 +120,8 @@ export function CompositeBadge({ signal }: { signal: MarketStateResult["signal"]
             ? <span className="inline-flex items-center gap-1 rounded-full border border-border/60 px-2 py-0.5 text-muted-foreground">暂不开新仓</span>
             : <span className="inline-flex items-center gap-1 rounded-full border border-border/60 px-2 py-0.5 text-muted-foreground">能不能开新仓：不知道</span>}
       </div>
+      {/* 风险徽标与五维「抗跌度」方向相反,并排时必须当场说破,不然「低风险」会被读成「抗跌度低」 */}
+      {risk && <p className="max-w-xl text-center text-[10px] text-muted-foreground">{RISK_LEVEL_HINT}</p>}
     </div>
   );
 }
@@ -490,7 +492,7 @@ export function MarketState() {
         {/* 五维评分 */}
         <GlassCard>
           <h2 className="mb-1 text-sm font-semibold">五维评分明细</h2>
-          <p className="mb-1 text-[11px] text-muted-foreground">五维都是 0–100 分，<b className="font-medium text-foreground">分越高越正面</b>；环下那行写的是高分那一端的意思。「抗跌度」原名「风险」，量的是安全度 —— 分低才是危险。</p>
+          <p className="mb-1 text-[11px] text-muted-foreground">五维都是 0–100 分，<b className="font-medium text-foreground">分越高越正面</b>；环下那行写的是高分那一端的意思。「抗跌度」原名「风险」，量的是安全度 —— 分低才是危险。上方的「低/中/高/极高风险」是独立徽标、方向相反：抗跌度分越低越危险。</p>
           <p className="mb-4 text-[11px] text-muted-foreground">括号里是实际生效权重：某一维没数据时，它的权重会让渡给其余维度；事件面另外设 8% 封顶（名义 0.15）。</p>
           <div className="grid grid-cols-5 gap-4">
             <ScoreRing value={dimensions.emotion.score} color="#6366f1" label={DIMENSION_LABELS.emotion.label} hint={DIMENSION_LABELS.emotion.hint} weight={dimensions.emotion.weight} asOf={dimensions.emotion.as_of} stale={staleSet.has("emotion")} />

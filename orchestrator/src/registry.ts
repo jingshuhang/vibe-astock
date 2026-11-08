@@ -38,11 +38,20 @@ export interface EndpointDef {
   /** 温度计历史序列:这些证据字段(白名单)在归档时写进用户数据区序列,下次运行生成 _prev / _change_* 比较证据(orchestrator/src/finance/thermo_history.ts) */
   history_fields?: string[];
   /**
-   * 快照最多能放多久(秒)。缺省 = 不限(界面打开就用上次的,直到用户点刷新)。
+   * 快照最多能放多久(秒)。**这是硬上限**:`service.ts` 把它乘 1000 传给
+   * `snapshotUsable(..., endpointMaxAgeMs)`,后者与调用方 `consistency.max_age_ms`
+   * 取 `Math.min` —— 调用方只能更严,放宽不了。
+   * 🔴 不写**不等于「不限」**:2026-11-06 起 `snapshot.ts` 的 `prefer_cache` 缺省自带
+   *    `DEFAULT_PREFER_CACHE_MAX_AGE_MS`(2 分钟),没声明的端点落这个兜底。
+   *    早先这里写的是「不写就不限时」,那是修复之前的口径,别再照它理解。
    * 🔴 **产出里含"按此刻算出来"的字段的端点必须写这个**,尤其是 `0` = 从不缓存。
    *    这类字段缓存下来就会被永久冻结:上午算出来的状态,晚上再打开还是它,
    *    而且**永远不会自己好**。垂类里往往有整条逻辑建在这种字段上
    *    (Codex 架构评审 arch-r1 §B)。
+   *
+   * ⚠️ 全仓还有第二套声明:`finance/snapshot_ttl.ts` 的 `SNAPSHOT_MAX_AGE_MS`
+   *    (视图动作的调用方意图)。两侧重叠时按**更严**的那个生效,改一侧要核对另一侧;
+   *    `orchestrator/test/ttl_declarations.test.ts` 钉住了这条口径与硬上限的接线。
    */
   cache_max_age_sec?: number | null;
   /**

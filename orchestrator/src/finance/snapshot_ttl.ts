@@ -19,6 +19,16 @@
  *  - 收盘档 / 日更 / 一天只该换一次 → 12 小时（早上开盘前必然过期重取，拿到昨晚那份）；
  *  - 键里带日期、内容不可变的**不进这张表**（如「过去某天的涨停明细」），
  *    给它们加时效只会让一次刷新把 20 天全部重取一遍。
+ *
+ * ⚠️ **这层不是最终生效的那张表，别把它当成唯一真源**。还有第二套硬上限：
+ *    `datasources/registry.json` 每个端点的 `cache_max_age_sec`，由 `service.ts` 读出后
+ *    传给 `snapshotUsable`，与这里给的 `max_age_ms` 取 `Math.min` —— 谁更严听谁的。
+ *    2026-11-08 实测：注册表 182 个端点里 54 个有声明，与本表重叠 11 个、其中 8 个数值不同
+ *    （`cn_shortline_live` 本表 30s / 注册表 15s → 实际 15s；`tx_quotes_batch` 本表 20s /
+ *    注册表 300s → 实际 20s；`em_market_trend`、`cctv_news` 两侧一致）。
+ *    **刻意不把两张表并成一张**：统一数值会改变真实取数频率（可能把 15s 放宽到 30s，
+ *    也可能把 300s 收紧到 20s 而打爆上游），那是行为变更、需要盘中实机验证，不能顺手做。
+ *    口径与分叉清单写在 README「快照时效」，护栏见 `test/ttl_declarations.test.ts`。
  */
 import { DEFAULT_PREFER_CACHE_MAX_AGE_MS, type Consistency } from "../snapshot.ts";
 

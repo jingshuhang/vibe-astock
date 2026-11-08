@@ -181,13 +181,22 @@ export function breadthFrom(env: Record<string, unknown>): BreadthCounts | null 
   return limit_up + limit_down + up + down + flat > 0 ? { limit_up, limit_down, up, down, flat, turnover_yi } : null;
 }
 
-function extractBreadth(env: Record<string, unknown>): BreadthSummary {
+/**
+ * 🔴 一家都没解析出来时返回 **null**，不再用 `?? 0` 填满六个计数。
+ *    旧写法里 `extract()` 拿到的是一个「长得像有数据」的对象，块状态因此是 `ok`，
+ *    前端 `BreadthBody` 用 `String(d.limit_up)` 就把「没取到」画成「涨停 0 家 / 上涨 0 家」。
+ *    这是典型的「不报错、只给错答案」：同一屏的短线情绪还是实时读数，看着像全市场冰点。
+ *    返回 null 后 `extract()` 会把它标成 `empty`，`deriveOverviewMarketState` 也拿不到
+ *    假的 0，`breadthUsable({})` 直接判「算不出来」，不给分数、不设仓位上限。
+ */
+function extractBreadth(env: Record<string, unknown>): BreadthSummary | null {
   const c = breadthFrom(env);
+  if (!c) return null;
   return {
     scope: "全市场涨跌分布(东财)",
-    limit_up: c?.limit_up ?? 0, limit_down: c?.limit_down ?? 0,
-    up: c?.up ?? 0, down: c?.down ?? 0, flat: c?.flat ?? 0,
-    turnover_yi: c?.turnover_yi ?? null,
+    limit_up: c.limit_up, limit_down: c.limit_down,
+    up: c.up, down: c.down, flat: c.flat,
+    turnover_yi: c.turnover_yi,
   };
 }
 
@@ -311,9 +320,16 @@ async function extract(
     }
     if (!data) {
       const errs = Array.isArray(env.errors) ? (env.errors as unknown[]) : [];
-      return { status: "empty", data: null, note: errs.length ? String(errs[0]) : "无数据", at: r.fetched_at ?? null };
+      const note = kind === "breadth"
+        ? "涨跌分布一家都没解析出来（不是 0 家），不拿占位 0 当真值"
+        : errs.length ? String(errs[0]) : "无数据";
+      return { status: "empty", data: null, note, at: r.fetched_at ?? null };
     }
-    return { status: status === "partial" ? "partial" : "ok", data, at: r.fetched_at ?? null };
+    // partial 也要说一句：缺的分档会被算成 0，不说就会把「少了几档」读成「那几档一家没有」。
+    const note = status === "partial" && kind === "breadth"
+      ? "这一块只有部分数据：没取到的分档显示为 0，别当成「一家都没有」"
+      : undefined;
+    return { status: status === "partial" ? "partial" : "ok", data, note, at: r.fetched_at ?? null };
   } catch (e) {
     return { status: "failed", data: null, note: e instanceof Error ? e.message : String(e) };
   }

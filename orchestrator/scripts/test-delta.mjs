@@ -12,9 +12,10 @@
 //
 // 用法:
 //   node scripts/test-delta.mjs                    # 跑全量,只报新增失败(回归),退出码 0/1
-//   node scripts/test-delta.mjs --update-baseline  # 用当前失败覆盖基线(确认后主动收编)
+//   node scripts/test-delta.mjs --update-baseline  # 用当前失败覆盖基线;有新增失败时**拒绝**,要收编再加 --force
 //   node scripts/test-delta.mjs --only "market_call,schedule"  # 只跑部分文件(快验,不与基线比对)
-//   node scripts/test-delta.mjs --flaky "service_api_mcp.test.ts::请求体上限"  # 把基线里匹配的条目标成不稳定
+//   node scripts/test-delta.mjs --flaky "service_api_mcp.test.ts::请求体上限"  # 把基线里**已有**的条目标成不稳定
+//   ... --flaky "文件::用例" --allow-new      # 显式给基线新增一条(会校验文件存在)
 //   node scripts/test-delta.mjs --show-code   # 报告末尾打印基线内 code-* 的逐条清单(默认只打一行汇总)
 //   node scripts/test-delta.mjs --concurrency 8
 //
@@ -108,20 +109,34 @@ if (flakyPat) {
   const b = JSON.parse(readFileSync(BASELINE, "utf8"));
   const hit = (b.entries || []).filter((e) => `${e.file}::${e.name}`.includes(flakyPat));
   if (!hit.length) {
-    // 没匹配到:允许用「文件名::用例名」直接登记一条(它可能此刻正好是通过的,
-    // 但你知道它偶发失败)。不带 :: 的模糊串找不到就没法登记 —— 那种情况是拼错了。
+    // 🔴 旧行为:没匹配到就**凭空新增**一条 flaky:true,既不验证文件/用例是否存在、
+    //    也不跑测试。报告里「可标 flaky」的提示配上这条,是把一条真实回归洗进基线的最短路径:
+    //    只要名字拼错(或用例本轮没失败)就多一条永久免检项,门禁从此不再报它。
+    //    现在默认拒绝;确实要登记(你单跑确认过它偶发)必须显式 --allow-new,且文件必须真实存在。
     const [file, ...rest] = flakyPat.split("::");
     const name = rest.join("::").trim();
-    if (!name) {
-      process.stderr.write(`[test-delta] 基线里没有匹配 "${flakyPat}" 的条目,且不是「文件名::用例名」格式,无法登记。\n`);
+    const fileNorm = file.trim();
+    const fileOk = /^[A-Za-z0-9_.-]+\.test\.ts$/.test(fileNorm) && existsSync(join(HERE, "..", "test", fileNorm));
+    const miss = `[test-delta] 基线里没有匹配 "${flakyPat}" 的条目。\n`;
+    if (!name || !fileOk) {
+      process.stderr.write(miss
+        + `  按「文件名::用例名」写、且 test/ 下得真有这个文件;拼错了就别登记。\n`
+        + `  只标**已有**条目: node scripts/test-delta.mjs --flaky "<已有用例名>"\n`);
       process.exit(2);
     }
-    const entry = { file: file.trim(), name, cause: classify(file.trim(), name, "", ""), err: "(人工标记为不稳定,尚未观察到本轮失败)", flaky: true };
+    if (!has("--allow-new")) {
+      process.stderr.write(miss
+        + `  ⚠️ 往基线里加一条 flaky 等于把它从门禁里免检,一条真实回归能被这样洗掉。\n`
+        + `  先单跑 \`node --test test/${fileNorm}\` 确认它确实偶发失败;\n`
+        + `  确认后显式登记: node scripts/test-delta.mjs --flaky "${flakyPat}" --allow-new\n`);
+      process.exit(2);
+    }
+    const entry = { file: fileNorm, name, cause: classify(fileNorm, name, "", ""), err: "(人工标记为不稳定,尚未观察到本轮失败)", flaky: true };
     b.entries = [...(b.entries || []), entry].sort((x, y) => (x.file + x.name).localeCompare(y.file + y.name));
     b.count = b.entries.length;
     b.flakyCount = b.entries.filter((e) => e.flaky).length;
     writeFileSync(BASELINE, JSON.stringify(b, null, 2));
-    process.stdout.write(`已登记 flaky(新增): ${entry.file} :: ${entry.name}\n`);
+    process.stdout.write(`已登记 flaky(新增,--allow-new): ${entry.file} :: ${entry.name}\n`);
     process.exit(0);
   }
   for (const e of hit) e.flaky = true;
@@ -148,15 +163,31 @@ const current = new Map();
 for (const r of sweep.results) for (const n of r.fail) current.set(`${r.file}::${normName(n)}`, { file: r.file, name: normName(n) });
 
 if (has("--update-baseline")) {
+  const prevEntries = existsSync(BASELINE) ? (JSON.parse(readFileSync(BASELINE, "utf8")).entries || []) : [];
+  // 🔴 旧行为:用当前**所有**失败覆盖基线,一句二次确认都没有。一次负载抖动、或一条
+  //    本次改动引入的真实回归,只要跑一次 --update-baseline 就变成「既有失败」,
+  //    门禁从此不再报它 —— 与「拿基线洗回归」只差一条命令。
+  //    现在默认拒绝有新增失败的重建;确认过是环境性/既有问题才加 --force,并且逐条打出来。
+  const prevKeys = new Set(prevEntries.map((e) => `${e.file}::${e.name}`));
+  const newcomers = [...current.keys()].filter((k) => !prevKeys.has(k));
+  if (newcomers.length && !has("--force")) {
+    process.stderr.write(`[test-delta] 拒绝重建基线:本轮有 ${newcomers.length} 条失败不在旧基线里。\n`);
+    for (const k of newcomers) process.stderr.write(`   + ${k.replace("::", " :: ")}\n`);
+    process.stderr.write(`   先逐条单跑 \`node --test test/<文件>\` 确认是环境性还是真回归;\n`
+      + `   确认要收编才跑: node scripts/test-delta.mjs --update-baseline --force\n`);
+    process.exit(1);
+  }
+  if (newcomers.length) {
+    process.stderr.write(`[test-delta] --force:本次收编 ${newcomers.length} 条新增失败(会写进基线,事后请复核)\n`);
+    for (const k of newcomers) process.stderr.write(`   + ${k.replace("::", " :: ")}\n`);
+  }
   process.stderr.write(`[test-delta] 抓取报错用于打标签...\n`);
   const errMap = harvestErrors([...new Set([...current.values()].map((v) => v.file))]);
   // 旧基线里标了 flaky 的条目:本轮仍在失败时要**继承**标记,
   // 否则重建一次就把「这条不稳」的知识清掉了(实测踩过:标记丢了,下次它偶发通过就被报成「已修复」)。
   const prevFlaky = new Map();
-  if (existsSync(BASELINE)) {
-    for (const e of JSON.parse(readFileSync(BASELINE, "utf8")).entries || []) {
-      if (e.flaky) prevFlaky.set(`${e.file}::${e.name}`, true);
-    }
+  for (const e of prevEntries) {
+    if (e.flaky) prevFlaky.set(`${e.file}::${e.name}`, true);
   }
   const fresh = [...current.values()]
     .map((v) => {
@@ -186,14 +217,11 @@ if (has("--update-baseline")) {
   // 标了 flaky 的条目本轮即使通过也要留下:偶发失败不能当成「已修复」扔掉,
   // 否则下次它再偶发一次就会被报成「新增」,又回到人工核对。
   const kept = [];
-  if (existsSync(BASELINE)) {
-    const prev = JSON.parse(readFileSync(BASELINE, "utf8"));
-    const freshKeys = new Set(fresh.map((e) => `${e.file}::${e.name}`));
-    for (const e of prev.entries || []) {
-      if (e.flaky && !freshKeys.has(`${e.file}::${e.name}`)) {
-        // 保留下来的旧条目也可能是空 err(上一版把它吞掉了),同样要补一句,别留白
-        kept.push({ ...e, err: e.err || "(本轮通过;历史上是负载偶发,没抓到过错误文本)" });
-      }
+  const freshKeys = new Set(fresh.map((e) => `${e.file}::${e.name}`));
+  for (const e of prevEntries) {
+    if (e.flaky && !freshKeys.has(`${e.file}::${e.name}`)) {
+      // 保留下来的旧条目也可能是空 err(上一版把它吞掉了),同样要补一句,别留白
+      kept.push({ ...e, err: e.err || "(本轮通过;历史上是负载偶发,没抓到过错误文本)" });
     }
   }
   const entries = [...fresh, ...kept].sort((a, b) => (a.file + a.name).localeCompare(b.file + b.name));
@@ -208,6 +236,7 @@ if (has("--update-baseline")) {
     entries,
   }, null, 2));
   process.stdout.write(`[test-delta] 基线已写入 ${BASELINE}\n  共 ${entries.length} 条\n`);
+  if (newcomers.length) process.stdout.write(`    ⚠️ 本次 --force 收编了 ${newcomers.length} 条新增失败,请回头复核\n`);
   if (kept.length) process.stdout.write(`    其中本轮通过但按 flaky 保留 ${kept.length} 条\n`);
   const envN = entries.filter((e) => isEnv(e.cause)).length;
   // ⚠️ 只数"非环境性的 flaky":否则一条既 env-* 又 flaky 的会被三类同时数一遍,
@@ -283,7 +312,7 @@ if (fixed.length) {
 if (flakyNow.size) {
   process.stdout.write(`⚪ 并行跑时红、单独重跑通过 ${flakyNow.size} 条(负载导致,不判为回归):\n`);
   for (const k of flakyNow) process.stdout.write(`   ${k.replace("::", " :: ")}\n`);
-  process.stdout.write(`   确认是长期不稳的,可标 flaky: node scripts/test-delta.mjs --flaky "${[...flakyNow][0].split("::")[1]}"\n\n`);
+  process.stdout.write(`   确认是长期不稳的(先单跑复现),再显式登记: node scripts/test-delta.mjs --flaky "${[...flakyNow][0]}" --allow-new\n\n`);
 }
 if (uncovered.length) {
   process.stdout.write(`⚠️ 单独重跑没覆盖到 ${uncovered.length} 条(不判 flaky,保留为新增失败):\n`);
