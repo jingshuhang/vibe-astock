@@ -23,7 +23,7 @@ import { intradayVerdict, auctionTag, type LampTone, type Verdict } from "./intr
 import { ladderStats } from "./ladderFacts";
 import { rescoreOpportunity, type RescoreResult } from "./patternPrior";
 import type { IntradayResult, WatchView } from "./watchTypes";
-import type { MarketStateResult } from "@/lib/marketState";
+import type { MarketStateResult, MarketPhase } from "@/lib/marketState";
 import type { StockOpportunity, ShortlineOpportunityResult } from "@/lib/shortlineOpportunities";
 
 /** 模式置信度过这条线、且环境不反对，才判「支持」（⚠️ 初始值，未回测） */
@@ -71,6 +71,12 @@ export interface VerifyFlow {
   gates: VerifyGate[];
   tagged: TaggedOpp[];
   counts: Record<OppCall, number>;
+  /**
+   * 市场状态页的相位，供「逆市候选」查同一份环境档。
+   * ⚠️ 不要用 `ShortlineOpportunityResult.phase`：那是后端按封板率派生的「强势 / 温和 / 分歧 / 震荡」，
+   *    与 MarketPhase（修复期 / 退潮期 / …）不是一套标签，拿它查 regime 会全落到「环境未覆盖」。
+   */
+  phase: MarketPhase | null;
 }
 
 const pct0 = (v: number) => `${Math.round(v * 100)}%`;
@@ -212,5 +218,5 @@ export function verifyOpportunities(input: {
   const counts: Record<OppCall, number> = { 支持: 0, 观察: 0, 降级: 0, 回避: 0 };
   for (const t of tagged) counts[t.call]++;
 
-  return { known, tone, head, note, lamps: verdict?.lamps ?? null, gates, tagged: order, counts };
+  return { known, tone, head, note, lamps: verdict?.lamps ?? null, gates, tagged: order, counts, phase };
 }

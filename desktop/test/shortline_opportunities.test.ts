@@ -135,6 +135,14 @@ test("验证流:上限 20% 但信号不给开新仓时,逐股佐证不许把上�
   assert.match(gate!.read, /仓位上限 20%/, "顶部佐证读数与逐股文案必须同口径");
 });
 
+test("验证流带出市场状态相位,供逆市候选查同一份环境档", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: mktOf({ phase: "修复期" }) });
+  assert.equal(v.phase, "修复期", "必须是 MarketPhase,不是机会页按封板率派生的「强势/温和/分歧/震荡」");
+  const none = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: null });
+  assert.equal(none.phase, null, "市场状态没取到就留空,不拿别处的标签顶上");
+});
+
 test("验证流:判断条能给结论时抄它的 head,不另造词 —— 两页看到的是同一句话", async () => {
   const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
   // 上限不设(市场状态没压),但盘中判断条三灯全报警

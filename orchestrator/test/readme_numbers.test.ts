@@ -18,6 +18,11 @@ import { PRODUCT_NAME } from "../src/brand.ts";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (rel: string) => fs.readFileSync(path.join(REPO, rel), "utf8");
 const ZH = read("README.md");
+/**
+ * 旧停用说明的措辞。原来写的是 `/可用 \d+ 个/`，会误伤「当前可用 24 个交易日」这种
+ * 跟端点毫不相干的正常表述（2026-11-10 新增逆市候选小节时踩到）。收紧到「端点」。
+ */
+const LEGACY_DISABLED_ZH = /可用 \d+ 个端点|默认停用/;
 const EN = read("README_en.md");
 
 const ZH_NUM = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
@@ -53,7 +58,7 @@ test("README 端点数 / 层数 / 停用数跟数据注册表一致", () => {
     allEqual(ZH, /可用 (\d+) 个/g, 1, enabled, "中文 README「可用 N 个」");
     allEqual(ZH, /(\d+) 个端点因服务器不再返回数据而默认停用/g, 1, disabled.length, "中文 README 停用数");
   } else {
-    assert.doesNotMatch(ZH, /可用 \d+ 个|默认停用/, "注册表已没有停用端点,中文 README 还写着停用说明");
+    assert.doesNotMatch(ZH, LEGACY_DISABLED_ZH, "注册表已没有停用端点,中文 README 还写着停用说明");
   }
 
   allEqual(EN, /(\d+) data endpoints/g, 4, enabled, "English README 'N data endpoints'");
@@ -71,6 +76,13 @@ test("README 端点数 / 层数 / 停用数跟数据注册表一致", () => {
   for (const md of [ZH, EN]) allEqual(md, /badge\/data-(\d+)%20endpoints/g, 1, enabled, "数据端点徽标");
   // README 点名停用的是通达信的三个端点;停用别的端点时要改说明
   assert.ok(disabled.every((e) => e.id.startsWith("tdx_")), `停用的不全是通达信端点:${disabled.map((e) => e.id).join(", ")}`);
+});
+
+test("停用说明护栏只认「可用 N 个端点」,不误伤「可用 N 个交易日」这类正常表述", () => {
+  assert.match("可用 178 个端点、4 个端点因服务器不再返回数据而默认停用", LEGACY_DISABLED_ZH);
+  assert.match("另外 4 个端点默认停用", LEGACY_DISABLED_ZH);
+  assert.doesNotMatch("当前可用 24 个交易日", LEGACY_DISABLED_ZH);
+  assert.doesNotMatch("可用 3 个格子", LEGACY_DISABLED_ZH);
 });
 
 test("README 栏目数和栏目名跟左侧导航一致", () => {

@@ -13,6 +13,11 @@ import type { IntradayResult, WatchView } from "../shortline/watchTypes";
 import { verifyOpportunities, type OppCall, type VerifyFlow } from "../shortline/opportunityVerify";
 import { PRIOR, type PatternCategory, type Regime, type RescoreResult } from "../shortline/patternPrior";
 import type { LampTone } from "../shortline/intradayVerdict";
+import type { SamplesResult } from "../shortline/viewTypes";
+import {
+  buildCounterTrend, counterTrendSummary, CT_MIN_SAMPLE, CT_MIN_WIN_RATE,
+  type CounterTrendResult,
+} from "../shortline/counterTrend";
 
 const BTN = "inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50";
 const pctColor = (p: number | null | undefined) =>
@@ -88,6 +93,86 @@ export function VerifyCard({ v, loading, why }: { v: VerifyFlow | null; loading:
             <span className="ml-1 text-[11px]">档位说的是「环境对这个模式的态度」,不是买卖建议。</span>
           </p>
         </div>
+      )}
+    </GlassCard>
+  );
+}
+
+/**
+ * 逆市候选 —— 环境关闭时的**第二视图**，与验证流并列，不推翻它。
+ * 验证流仍写「环境关闭，不加」、清单仍全部回避；这一栏只回答
+ * 「若只看模式的历史现象统计，哪些格子是正的」，判断权留给人。
+ */
+export function CounterTrendCard({ c, loading }: { c: CounterTrendResult; loading: boolean }) {
+  return (
+    <GlassCard>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+          <TrendingUp className="h-4 w-4" />逆市候选 · 不看大盘闸门的第二视图
+        </h2>
+        <span className="text-[11px] text-muted-foreground">
+          {c.window ?? "窗口未知"} · {c.sample_days ?? "?"} 个交易日 · 环境 {c.regime}
+        </span>
+      </div>
+
+      {/* 这段不能删也不能弱化：闸门结论在上，这一栏只是并列信息 */}
+      <div className="mb-3 rounded-lg border border-warning/40 bg-warning/[0.07] px-3 py-2 text-[12px] leading-relaxed text-warning">
+        <b>闸门仍以验证流为准</b>（环境关闭时下面清单照旧全部回避）。这一栏只把「历史上哪些模式格子是正期望」并列摆出来，
+        {c.disclaimer}
+        <div className="mt-1 text-[11px] opacity-90">{c.regime_note}</div>
+      </div>
+
+      {loading && <p role="status" className="text-[12px] text-muted-foreground">涨停样本统计取数中…（第一次要逐日拉，可能几十秒）</p>}
+
+      {c.status === "failed" && (
+        <p className="py-4 text-center text-sm text-muted-foreground">
+          这一轮涨停样本没取到，逆市候选留白 —— <b>不等于今天没有逆市机会</b>。{c.gaps[0] ?? ""}
+        </p>
+      )}
+
+      {c.status === "no_qualified_cell" && (
+        <div className="text-[12px] text-muted-foreground">
+          <p>本轮没有任何格子通过证据门槛（n≥{CT_MIN_SAMPLE}、历史均值&gt;0、胜率≥{CT_MIN_WIN_RATE * 100}%），所以不给候选，不降标准凑数。</p>
+          <ul className="mt-1.5 space-y-1">
+            {c.rejected.map((r) => <li key={r.strategy}>· {r.strategy}：{r.reason}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {c.status === "ok" && (
+        <>
+          <p className="mb-2 text-[12px] text-muted-foreground">
+            {c.rows.length} 只落在历史正期望格子里（按格子均值排序）。每条并列<b>最差一只</b>与样本数，别只看均值。
+          </p>
+          <div className="space-y-1.5">
+            {c.rows.map((r) => (
+              <div key={r.code} className="rounded-lg border border-border/50 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono font-semibold">{r.code}</span>
+                  <span>{r.name}</span>
+                  <span className="text-muted-foreground">{r.sector} · {r.boards} 板</span>
+                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">{r.strategy}·{r.regime}</span>
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">n={r.stats.sample}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono tabular-nums text-[11px] text-muted-foreground">
+                  <span>胜率 <b className={pctColor(r.stats.win_rate)}>{r.stats.win_rate == null ? "—" : `${(r.stats.win_rate * 100).toFixed(1)}%`}</b></span>
+                  <span>均值 <b className={pctColor(r.stats.avg)}>{pctText(r.stats.avg)}</b></span>
+                  <span>中位 <b className={pctColor(r.stats.median)}>{pctText(r.stats.median)}</b></span>
+                  <span>最差 <b className="text-success">{pctText(r.stats.worst)}</b></span>
+                  <span>再板 <b>{r.stats.limit_up_rate == null ? "—" : `${(r.stats.limit_up_rate * 100).toFixed(1)}%`}</b></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {c.caveat && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">口径：{c.caveat}</p>}
+      {c.gaps.length > 0 && (
+        <details className="mt-2 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer">本轮缺口 / 未过门槛的格子（{c.gaps.length}）</summary>
+          <ul className="mt-1 space-y-1">{c.gaps.map((g, i) => <li key={i}>· {g}</li>)}</ul>
+        </details>
       )}
     </GlassCard>
   );
@@ -206,6 +291,12 @@ export function ShortlineOpportunities() {
   const [track, setTrack] = useState<OpportunityTrackResult | null>(null);
   const [trackWhy, setTrackWhy] = useState<string | null>(null);
   const [trackLoading, setTrackLoading] = useState(true);
+  /**
+   * 逆市候选的证据源：实机涨停样本统计（不是 patternPrior 的 18 日冻结表）。
+   * 单独一批取，第一次可能要逐日拉几十秒；取不到只让这一栏留白，不挡清单、不挡验证流。
+   */
+  const [ctSamples, setCtSamples] = useState<SamplesResult | null>(null);
+  const [ctWhy, setCtWhy] = useState<string | null>(null);
   const seq = useRef(0);
   /** 最近一次**取完数**的时刻 —— 自动刷新据此决定切回前台要不要补 */
   const loadedAt = useRef<number | null>(null);
@@ -275,8 +366,22 @@ export function ShortlineOpportunities() {
     return () => { alive = false; };
   }, []);
 
+  // 逆市候选的证据单独取。90 天窗口由后端按「有缓存的日子」算，实机可用 24 个交易日。
+  useEffect(() => {
+    if (!data?.date) return;
+    let alive = true;
+    const ctl = new AbortController();
+    backend.shortlineView<SamplesResult>("shortline_samples", { date: data.date, days: 90, refresh: false }, ctl.signal)
+      .then((s) => { if (alive) { setCtSamples(s); setCtWhy(null); } })
+      .catch((e: unknown) => { if (alive) setCtWhy(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; ctl.abort(); };
+  }, [data?.date]);
+
   /** 缺口合并去重：gaps 是新后端字段，notes 是同源的兼容别名；老后端只有 notes */
   const allGaps = data ? [...new Set([...(data.gaps ?? []), ...(data.notes ?? [])])] : [];
+  // 环境档必须与验证流同源：用 mkt.signal.phase（MarketPhase）。
+  // 不能用 data.phase —— 那是机会页按封板率派生的「强势/温和/分歧/震荡」，查 regime 会全部落空。
+  const counterTrend = buildCounterTrend({ opps: data, samples: ctSamples, phase: verify?.phase, samplesWhy: ctWhy });
 
   useAiPage({
     key: "shortline_opportunities",
@@ -292,6 +397,7 @@ export function ShortlineOpportunities() {
           ? `验证流(盯盘三页的佐证):${verify.head}(${verify.note}) | 支持${verify.counts.支持} 观察${verify.counts.观察} 降级${verify.counts.降级} 回避${verify.counts.回避}\n`
             + verify.gates.map((g) => `- ${g.label}:${g.read}(${g.from})`).join("\n")
             : verifyWhy ? `验证流:没取到(${verifyWhy})\n` : "验证流:佐证还在取\n")
+        + `${counterTrendSummary(counterTrend)}\n`
         + (track?.available
           ? `本页战绩:已对账 ${track.settled_count} 只 / 待对账 ${track.pending_count} 只(实测与先验并排在页面)\n`
           : "")
@@ -354,6 +460,9 @@ export function ShortlineOpportunities() {
 
       {/* 验证流:盯盘三页(实时动态 / 市场实时概况 / 竞价与盘中路径)的动态结论 */}
       <VerifyCard v={verify} loading={verifyLoading} why={verifyWhy} />
+
+      {/* 逆市候选:并列第二视图,只加信息、不推翻上面的闸门结论 */}
+      <CounterTrendCard c={counterTrend} loading={(!ctSamples && !ctWhy) || verifyLoading} />
 
       {/* 机会清单 */}
       <GlassCard>
