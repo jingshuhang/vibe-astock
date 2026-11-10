@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { emptyOpportunityHint, type ShortlineOpportunityResult } from "@/lib/shortlineOpportunities";
 import type { OpportunityTrackResult } from "@/lib/shortlineOpportunityTrack";
 import type { IntradayResult, WatchView } from "../shortline/watchTypes";
-import { verifyOpportunities, type OppCall, type VerifyFlow } from "../shortline/opportunityVerify";
+import { verifyOpportunities, mergeCounterTrendCalls, type OppCall, type VerifyFlow } from "../shortline/opportunityVerify";
 import { PRIOR, type PatternCategory, type Regime, type RescoreResult } from "../shortline/patternPrior";
 import type { LampTone } from "../shortline/intradayVerdict";
 import type { SamplesResult } from "../shortline/viewTypes";
@@ -52,7 +52,9 @@ const HEAD_TONE: Record<LampTone, string> = {
 };
 
 /** 验证流区块:总裁决 + 佐证清单(每条带来源页)+ 裁决计数。导出是为了测试能直接喂 VerifyFlow 断言文案 */
-export function VerifyCard({ v, loading, why }: { v: VerifyFlow | null; loading: boolean; why: string | null }) {
+export function VerifyCard({ v, loading, why, counterTrendNote }: {
+  v: VerifyFlow | null; loading: boolean; why: string | null; counterTrendNote?: string | null;
+}) {
   return (
     <GlassCard>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -92,6 +94,7 @@ export function VerifyCard({ v, loading, why }: { v: VerifyFlow | null; loading:
             裁决:<b className="text-primary">{v.counts.支持} 支持</b> · {v.counts.观察} 观察 · {v.counts.降级} 降级 · {v.counts.回避} 回避。
             <span className="ml-1 text-[11px]">档位说的是「环境对这个模式的态度」,不是买卖建议。</span>
           </p>
+          {counterTrendNote && <p className="mt-1 text-[11px] text-warning">{counterTrendNote}</p>}
         </div>
       )}
     </GlassCard>
@@ -99,11 +102,14 @@ export function VerifyCard({ v, loading, why }: { v: VerifyFlow | null; loading:
 }
 
 /**
- * 逆市候选 —— 环境关闭时的**第二视图**，与验证流并列，不推翻它。
- * 验证流仍写「环境关闭，不加」、清单仍全部回避；这一栏只回答
- * 「若只看模式的历史现象统计，哪些格子是正的」，判断权留给人。
+ * 逆市候选 —— 与验证流并列的**第二视图**，不推翻顶部闸门结论。
+ * 这一栏只回答「若只看模式的历史现象统计，哪些格子是正的」，判断权留给人。
+ * `rejudged` 是本轮因这一栏从「回避」改判「逆市观察」的只数（只在闸门关闭时可能 > 0），
+ * 文案必须跟着它走 —— 不能一边改判，一边还沿用旧版那种「清单全部回避」的说法。
  */
-export function CounterTrendCard({ c, loading }: { c: CounterTrendResult; loading: boolean }) {
+export function CounterTrendCard({ c, loading, rejudged }: {
+  c: CounterTrendResult; loading: boolean; rejudged?: number;
+}) {
   return (
     <GlassCard>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -117,7 +123,11 @@ export function CounterTrendCard({ c, loading }: { c: CounterTrendResult; loadin
 
       {/* 这段不能删也不能弱化：闸门结论在上，这一栏只是并列信息 */}
       <div className="mb-3 rounded-lg border border-warning/40 bg-warning/[0.07] px-3 py-2 text-[12px] leading-relaxed text-warning">
-        <b>闸门仍以验证流为准</b>（环境关闭时下面清单照旧全部回避）。这一栏只把「历史上哪些模式格子是正期望」并列摆出来，
+        <b>闸门仍以验证流为准</b>（顶部结论不因这一栏改变）。
+        {(rejudged ?? 0) > 0
+          ? <>这一轮闸门关闭，下面清单里有 <b>{rejudged}</b> 只落在正期望格子、从「回避」改判「逆市观察（闸门外）」，其余照旧回避 —— 改的是个股档位，<b>不是放行闸门</b>。</>
+          : <>闸门没关，或本轮没有票落在过线格子里，下面清单的档位一律按验证流原判执行，这一栏只作并列参考、不改档位。</>}
+        这一栏只把「历史上哪些模式格子是正期望」并列摆出来，
         {c.disclaimer}
         <div className="mt-1 text-[11px] opacity-90">{c.regime_note}</div>
       </div>
@@ -382,6 +392,18 @@ export function ShortlineOpportunities() {
   // 环境档必须与验证流同源：用 mkt.signal.phase（MarketPhase）。
   // 不能用 data.phase —— 那是机会页按封板率派生的「强势/温和/分歧/震荡」，查 regime 会全部落空。
   const counterTrend = buildCounterTrend({ opps: data, samples: ctSamples, phase: verify?.phase, samplesWhy: ctWhy });
+  /**
+   * 逆市改判叠加：落在正期望格子的票从「回避」改判「观察」，其余不动。
+   * 顶部闸门结论（head / note / gates / tone）原样保留 —— 只改个股档位与计数。
+   */
+  const displayVerify = mergeCounterTrendCalls(verify, counterTrend);
+  const ctRejudged = displayVerify && verify && displayVerify !== verify
+    ? displayVerify.counts.观察 - verify.counts.观察 : 0;
+  const ctNote = ctRejudged > 0
+    ? `其中 ${ctRejudged} 只从「回避」改判「逆市观察」（不采纳大盘闸门的第二层裁决）；上面的「${displayVerify?.head}」不变，这不代表系统建议开仓。`
+    : counterTrend.status === "ok" && verify && !verify.gateClosed
+      ? "本轮大盘闸门没关，清单档位按验证流原判执行；下面的逆市候选只作并列参考，不触发改判。"
+      : null;
 
   useAiPage({
     key: "shortline_opportunities",
@@ -393,11 +415,12 @@ export function ShortlineOpportunities() {
         + (allGaps.length
           ? `⚠️ 本轮数据缺口(下面的空清单或排序要按缺口读,不是完整结论):${allGaps.slice(0, 6).join("；")}\n`
           : "")
-        + (verify
-          ? `验证流(盯盘三页的佐证):${verify.head}(${verify.note}) | 支持${verify.counts.支持} 观察${verify.counts.观察} 降级${verify.counts.降级} 回避${verify.counts.回避}\n`
-            + verify.gates.map((g) => `- ${g.label}:${g.read}(${g.from})`).join("\n")
+        + (displayVerify
+          ? `验证流(盯盘三页的佐证):${displayVerify.head}(${displayVerify.note}) | 支持${displayVerify.counts.支持} 观察${displayVerify.counts.观察} 降级${displayVerify.counts.降级} 回避${displayVerify.counts.回避}\n`
+            + displayVerify.gates.map((g) => `- ${g.label}:${g.read}(${g.from})`).join("\n")
             : verifyWhy ? `验证流:没取到(${verifyWhy})\n` : "验证流:佐证还在取\n")
         + `${counterTrendSummary(counterTrend)}\n`
+        + (ctRejudged > 0 ? `逆市改判:${ctRejudged} 只从回避改为观察(闸门外;闸门结论不变,不是放行也不是建议)\n` : "")
         + (track?.available
           ? `本页战绩:已对账 ${track.settled_count} 只 / 待对账 ${track.pending_count} 只(实测与先验并排在页面)\n`
           : "")
@@ -459,23 +482,23 @@ export function ShortlineOpportunities() {
       <TrackCard t={track} loading={trackLoading} why={trackWhy} />
 
       {/* 验证流:盯盘三页(实时动态 / 市场实时概况 / 竞价与盘中路径)的动态结论 */}
-      <VerifyCard v={verify} loading={verifyLoading} why={verifyWhy} />
+      <VerifyCard v={displayVerify} loading={verifyLoading} why={verifyWhy} counterTrendNote={ctNote} />
 
       {/* 逆市候选:并列第二视图,只加信息、不推翻上面的闸门结论 */}
-      <CounterTrendCard c={counterTrend} loading={(!ctSamples && !ctWhy) || verifyLoading} />
+      <CounterTrendCard c={counterTrend} loading={(!ctSamples && !ctWhy) || verifyLoading} rejudged={ctRejudged} />
 
       {/* 机会清单 */}
       <GlassCard>
         <h2 className="mb-3 text-sm font-semibold">
           识别机会 ({opportunities.length} 只)
           {opportunities.length > 0 && (
-            <span className="ml-2 text-xs text-muted-foreground">{verify ? "按验证裁决排序,支持在前" : "按置信度降序"}</span>
+            <span className="ml-2 text-xs text-muted-foreground">{displayVerify ? "按验证裁决排序,支持在前" : "按置信度降序"}</span>
           )}
         </h2>
         {opportunities.length === 0
           ? <p className="py-6 text-center text-sm text-muted-foreground">{emptyOpportunityHint(data)}</p>
           : <div className="space-y-2">
-            {(verify ? verify.tagged : opportunities.map((opp) => ({ opp, call: null as OppCall | null, why: "", prior: null as RescoreResult | null }))).map(({ opp: o, call, why, prior }) => (
+            {(displayVerify ? displayVerify.tagged : opportunities.map((opp) => ({ opp, call: null as OppCall | null, why: "", prior: null as RescoreResult | null }))).map(({ opp: o, call, why, prior }) => (
               <div key={o.code} className="flex items-start gap-3 rounded-lg border border-border/50 px-3 py-2 text-xs">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">

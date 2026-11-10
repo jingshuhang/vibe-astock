@@ -158,12 +158,20 @@ test("[纯函数] 门槛常量与安全映射", () => {
   assert.match(qualifyCell(null)!, /没有这个格子/);
 });
 
-test("[结构] 不许推翻验证流的一刀切：闸门结论仍在，counts.回避 不动", () => {
+test("[结构] 闸门结论仍在、判据本体不动；叠加层只在闸门关闭时介入", () => {
   const src = readFileSync(new URL("../src/verticals/finance/shortline/opportunityVerify.ts", import.meta.url), "utf8");
-  assert.match(src, /tone === "danger"[\s\S]{0,300}call: "回避"/, "环境关闭时仍全部回避");
+  assert.match(src, /tone === "danger"[\s\S]{0,300}call: "回避"/, "环境关闭时 verifyOpportunities 仍全部回避(判据本体未改)");
+  assert.match(src, /!v\.gateClosed/, "叠加层必须显式检查闸门关闭,不许靠 tone 反推");
+  assert.match(src, /gateClosed: closed/, "闸门标记要从同一个 closed 局部变量带出,不另算一套");
   const page = readFileSync(new URL("../src/verticals/finance/pages/ShortlineOpportunities.tsx", import.meta.url), "utf8");
   assert.match(page, /CounterTrendCard/, "新视图是并列新增的一块");
   assert.match(page, /counterTrendSummary/, "AI 上下文要带同一份摘要");
   assert.match(page, /phase:\s*verify\?\.phase/, "环境档必须取市场状态页的 MarketPhase");
   assert.doesNotMatch(page, /phase:\s*data\?\.phase/, "机会页的封板率派生相位不是同一套标签,不能拿来查 regime");
+  assert.match(page, /mergeCounterTrendCalls/, "逆市改判叠加层要接进页面");
+  assert.match(page, /displayVerify\.tagged/, "清单要渲染叠加后的档位,不能还是全回避");
+  assert.match(page, /<VerifyCard v=\{displayVerify\}/, "验证流卡片仍收同一份闸门结论(head 由展开保留)");
+  assert.match(page, /counterTrendNote/, "改判要在验证流卡片里显式说明");
+  assert.match(page, /rejudged=\{ctRejudged\}/, "逆市候选文案要跟着改判只数走");
+  assert.doesNotMatch(page, /清单照旧全部回避/, "叠加层已上线,这句过期文案不许回来");
 });

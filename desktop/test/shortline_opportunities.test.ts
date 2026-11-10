@@ -7,6 +7,7 @@ import { textOf, withRenderer } from "./helpers/render.ts";
 import type { IntradayResult, LadderWatchRow, LiveCounts, Snapshot, TierStat, WatchView } from "../src/verticals/finance/shortline/watchTypes.ts";
 import type { ShortlineOpportunityResult, StockOpportunity } from "../src/verticals/finance/lib/shortlineOpportunities.ts";
 import type { MarketStateResult } from "../src/verticals/finance/lib/marketState.ts";
+import type { CounterTrendResult } from "../src/verticals/finance/shortline/counterTrend.ts";
 
 const DIR = "/src/verticals/finance/shortline";
 const PAGE = "/src/verticals/finance/pages/ShortlineOpportunities.tsx";
@@ -97,6 +98,17 @@ const mktOf = (over: Partial<MarketStateResult["signal"]>): MarketStateResult =>
 const MKT_CLOSED = mktOf({});
 const MKT_OPEN = mktOf({ phase: "主升期", position_cap_pct: 100, can_open_position: true, gate_blockers: [], composite: 72 });
 
+/** 逆市候选（实机 24 日「高标接力·情绪中」格子） */
+const ctOf = (codes: string[], status: CounterTrendResult["status"] = "ok"): CounterTrendResult => ({
+  status, regime: "情绪中",
+  rows: codes.map((code) => ({
+    code, name: `票${code}`, sector: "算力", boards: 3, strategy: "高标接力", regime: "情绪中",
+    stats: { sample: 37, win_rate: 0.676, avg: 3.74, median: 9.98, best: 20, worst: -10.02, limit_up_rate: 0.541 },
+  })),
+  rejected: [], sample_days: 24, window: "2026-09-30 ~ 2026-11-09",
+  caveat: "市场现象统计", gaps: [], disclaimer: "不是买卖建议", regime_note: "未回测",
+});
+
 test("验证流:仓位上限 0 时环境关闭,清单一只不留地全部回避(模式再漂亮也是接盘)", async () => {
   const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
   const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
@@ -133,6 +145,105 @@ test("验证流:上限 20% 但信号不给开新仓时,逐股佐证不许把上�
   }
   const gate = v.gates.find((g) => g.key === "mktstate");
   assert.match(gate!.read, /仓位上限 20%/, "顶部佐证读数与逐股文案必须同口径");
+});
+
+// ─── 逆市改判叠加层：环境关闭时给区分度，但不推翻大盘闸门 ──────────────────────
+test("逆市改判:只有落在正期望格子的票从回避改判观察,其余仍回避", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
+  assert.equal(v.counts.回避, 4);
+  const out = r.mergeCounterTrendCalls(v, ctOf(["600002", "600004"]));
+  assert.notStrictEqual(out, v);
+  assert.equal(out.counts.观察, 2);
+  assert.equal(out.counts.回避, 2);
+  const callOf = (code: string) => out.tagged.find((t) => t.opp.code === code)!.call;
+  assert.equal(callOf("600002"), "观察");
+  assert.equal(callOf("600004"), "观察");
+  assert.equal(callOf("600001"), "回避");
+  assert.equal(callOf("600003"), "回避");
+});
+
+test("逆市改判:大盘闸门结论一字不动,原始验证流不许被就地改写", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
+  const out = r.mergeCounterTrendCalls(v, ctOf(["600002"]));
+  assert.equal(out.head, v.head);
+  assert.equal(out.note, v.note);
+  assert.equal(out.tone, v.tone);
+  assert.equal(out.known, v.known);
+  assert.equal(out.phase, v.phase);
+  assert.deepEqual(out.gates, v.gates);
+  assert.equal(v.counts.回避, 4, "原对象仍应是全回避");
+  assert.equal(v.counts.观察, 0);
+});
+
+test("逆市改判:理由写明闸门外、不是放行也不是建议,并带格子的真实数字", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
+  const out = r.mergeCounterTrendCalls(v, ctOf(["600002"]));
+  const why = out.tagged.find((t) => t.opp.code === "600002")!.why;
+  assert.match(why, /逆市观察（闸门外）/);
+  assert.match(why, /n=37/);
+  assert.match(why, /胜率 68%/);
+  assert.match(why, /均值 3\.74%/);
+  assert.match(why, /最差 -10\.02%/);
+  assert.match(why, /大盘闸门仍判/);
+  assert.match(why, /这不是放行也不是建议/);
+  assert.equal(out.tagged[0]!.opp.code, "600002", "观察要排到回避前面");
+});
+
+test("逆市改判:样本没取到 / 没格子过线 / 没有票命中,一律原样返回", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
+  assert.strictEqual(r.mergeCounterTrendCalls(v, null), v);
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf(["600002"], "failed")), v);
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf(["600002"], "no_qualified_cell")), v);
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf([])), v);
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf(["999999"])), v);
+  assert.strictEqual(r.mergeCounterTrendCalls(null, ctOf(["600002"])), null);
+});
+
+test("逆市改判:闸门没关时一律不介入 —— 用户要的是「哪怕环境关闭」,闸门开着就不叫逆市", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const open = r.verifyOpportunities({ opps: OPPS, intra: HEALTHY, watch: LADDER_OK, mkt: MKT_OPEN });
+  assert.equal(open.gateClosed, false);
+  const nonAvoid = open.tagged.find((t) => t.call !== "回避");
+  assert.ok(nonAvoid, "健康环境里应该有非回避档位");
+  assert.strictEqual(r.mergeCounterTrendCalls(open, ctOf(["600002"])), open, "闸门开着,整层原样返回");
+});
+
+test("逆市改判:盘中判断条报警但闸门没关,不许靠 tone=danger 反推闸门", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_OPEN });
+  assert.equal(v.head, "退潮中，不加");
+  assert.equal(v.tone, "danger", "这次是判断条报警,不是市场状态闸门关了");
+  assert.equal(v.gateClosed, false);
+  assert.equal(v.counts.回避, 4);
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf(["600002", "600004"])), v,
+    "不能因为整页 danger 就把弱票贴上「逆市观察（闸门外）」——闸门根本没关");
+});
+
+test("逆市改判:市场状态没取到时不猜闸门,叠加层不介入", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: null });
+  assert.equal(v.gateClosed, false, "闸门状态未知 ≠ 闸门关闭");
+  assert.strictEqual(r.mergeCounterTrendCalls(v, ctOf(["600002"])), v);
+});
+
+test("逆市改判:只改回避,不把本来已判支持的票降级或覆盖", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({ opps: OPPS, intra: EBB, watch: LADDER_OK, mkt: MKT_CLOSED });
+  // 闸门关闭下真实实现是「全部回避」;这里手工混入一档非回避,专测叠加层的作用域不变量。
+  const mixed = {
+    ...v,
+    tagged: v.tagged.map((t, i) => i === 0 ? { ...t, call: "支持" as const } : t),
+  };
+  const supported = mixed.tagged[0]!;
+  const avoid = mixed.tagged.find((t) => t.call === "回避")!;
+  assert.notEqual(supported.opp.code, avoid.opp.code, "两只必须是不同标的,别把同一只既当支持又当命中");
+  const out = r.mergeCounterTrendCalls(mixed, ctOf([supported.opp.code, avoid.opp.code]));
+  assert.equal(out.tagged.find((t) => t.opp.code === supported.opp.code)!.call, "支持", "已判支持的不许被覆盖");
+  assert.equal(out.tagged.find((t) => t.opp.code === avoid.opp.code)!.call, "观察", "命中的回避票照常改判");
 });
 
 test("验证流带出市场状态相位,供逆市候选查同一份环境档", async () => {

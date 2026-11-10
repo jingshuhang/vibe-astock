@@ -25,6 +25,7 @@ import { rescoreOpportunity, type RescoreResult } from "./patternPrior";
 import type { IntradayResult, WatchView } from "./watchTypes";
 import type { MarketStateResult, MarketPhase } from "@/lib/marketState";
 import type { StockOpportunity, ShortlineOpportunityResult } from "@/lib/shortlineOpportunities";
+import type { CounterTrendResult } from "./counterTrend.ts";
 
 /** 模式置信度过这条线、且环境不反对，才判「支持」（⚠️ 初始值，未回测） */
 const SUPPORT_MIN_CONF = 70;
@@ -71,6 +72,13 @@ export interface VerifyFlow {
   gates: VerifyGate[];
   tagged: TaggedOpp[];
   counts: Record<OppCall, number>;
+  /**
+   * 大盘闸门是否关闭（仓位上限 0，或信号判不能开新仓）。
+   * 「逆市改判叠加层」只在这一位为 true 时生效 —— 用户要的是「哪怕环境关闭」，
+   * 环境开放时验证流已经正常给了档位，不该再被「闸门外」的第二层裁决覆盖。
+   * 与 `closed` 局部变量同源，不另算一套，也不靠 tone / head 字符串反推。
+   */
+  gateClosed: boolean;
   /**
    * 市场状态页的相位，供「逆市候选」查同一份环境档。
    * ⚠️ 不要用 `ShortlineOpportunityResult.phase`：那是后端按封板率派生的「强势 / 温和 / 分歧 / 震荡」，
@@ -218,5 +226,45 @@ export function verifyOpportunities(input: {
   const counts: Record<OppCall, number> = { 支持: 0, 观察: 0, 降级: 0, 回避: 0 };
   for (const t of tagged) counts[t.call]++;
 
-  return { known, tone, head, note, lamps: verdict?.lamps ?? null, gates, tagged: order, counts, phase };
+  return { known, tone, head, note, lamps: verdict?.lamps ?? null, gates, tagged: order, counts, gateClosed: closed, phase };
+}
+
+/**
+ * 逆市改判叠加层（2026-11-10 用户拍板「改」）。
+ *
+ * 环境关闭时验证流仍把清单全部判「回避」，而「逆市候选」那一栏已用实机样本找出落在
+ * 历史正期望格子里的票 —— 同一只票上面是候选、下面是回避，读起来自相矛盾。
+ * 这一层把那几只票从「回避」改判「观察」，其余一字不动。
+ *
+ * 🔴 四条不变量：
+ *   ① **只在大盘闸门关闭时生效**（v.gateClosed）。用户要的是「哪怕环境关闭」；环境开放时
+ *      验证流已正常给了档位，「逆市（闸门外）」这个说法本身就不成立，一律原样返回。
+ *      闸门状态没取到（mkt=null → gateClosed=false，closed 也判不出 true）同样不介入，不猜。
+ *   ② 大盘闸门结论（head / note / tone / gates / phase）**原样保留** —— 顶部仍写「环境关闭，不加」。
+ *      改的是个股档位，不是放行闸门。刻意放在 `verifyOpportunities()` 之外：判据本体与
+ *      「环境反对时全部回避」的既有回归测试都不动，只在展示层叠加第二层裁决。
+ *   ③ 只改 `call === "回避"` 且落在 ct.rows 里的票；ct 没取到 / 没格子过线 / 没有票命中时原样返回。
+ *   ④ why 必须写明「闸门外」「不是放行也不是建议」，并带上格子的 n / 胜率 / 均值 / 最差。
+ */
+export function mergeCounterTrendCalls(v: VerifyFlow | null, ct: CounterTrendResult | null): VerifyFlow | null {
+  if (!v || !ct || ct.status !== "ok" || !ct.rows.length || !v.gateClosed) return v;
+  const picked = new Map(ct.rows.map((r) => [r.code, r]));
+  let changed = 0;
+  const tagged: TaggedOpp[] = v.tagged.map((t) => {
+    const r = picked.get(t.opp.code);
+    if (!r || t.call !== "回避") return t;
+    changed++;
+    const s = r.stats;
+    return {
+      ...t,
+      call: "观察" as const,
+      why: `逆市观察（闸门外）：${r.strategy}·${r.regime} 历史 n=${s.sample}、胜率 ${s.win_rate == null ? "—" : `${Math.round(s.win_rate * 100)}%`}、均值 ${s.avg?.toFixed(2) ?? "—"}%、最差 ${s.worst?.toFixed(2) ?? "—"}%；大盘闸门仍判「${v.head}」，这不是放行也不是建议`,
+    };
+  });
+  if (!changed) return v;
+  const counts: Record<OppCall, number> = { 支持: 0, 观察: 0, 降级: 0, 回避: 0 };
+  for (const t of tagged) counts[t.call]++;
+  const order = [...tagged].sort((a, b) => CALL_ORDER[a.call] - CALL_ORDER[b.call]
+    || b.prior.confidence - a.prior.confidence);
+  return { ...v, tagged: order, counts };
 }
