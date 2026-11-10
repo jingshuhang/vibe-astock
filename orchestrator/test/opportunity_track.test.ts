@@ -37,8 +37,8 @@ const opp = (code: string, boards: number, extra: Partial<StockOpportunity> = {}
 });
 
 const list = (date: string, opps: StockOpportunity[], main: string[] = ["算力"]): ShortlineOpportunityResult => ({
-  date, clock: "18:45:00", phase: "强势", limit_up_count: 80, broken_rate: 0.2, seal_rate: 0.7,
-  opportunities: opps, by_sector: {}, main_sectors: main, notes: [], source: "s",
+  date, clock: "18:45:00", status: "ok", phase: "强势", limit_up_count: 80, broken_rate: 0.2, seal_rate: 0.7,
+  opportunities: opps, by_sector: {}, main_sectors: main, gaps: [], notes: [], source: "s",
 });
 
 const trackOf = (ctx: ServiceContext) => ledgerList(ctx, "opportunity_track").opportunity_track ?? [];

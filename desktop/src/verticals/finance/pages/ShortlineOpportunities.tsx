@@ -7,7 +7,7 @@ import { useMarketAutoRefresh } from "@/hooks/useMarketAutoRefresh";
 import { isMarketTrading } from "@/lib/marketSymbol";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { cn } from "@/lib/utils";
-import type { ShortlineOpportunityResult } from "@/lib/shortlineOpportunities";
+import { emptyOpportunityHint, type ShortlineOpportunityResult } from "@/lib/shortlineOpportunities";
 import type { OpportunityTrackResult } from "@/lib/shortlineOpportunityTrack";
 import type { IntradayResult, WatchView } from "../shortline/watchTypes";
 import { verifyOpportunities, type OppCall, type VerifyFlow } from "../shortline/opportunityVerify";
@@ -275,13 +275,19 @@ export function ShortlineOpportunities() {
     return () => { alive = false; };
   }, []);
 
+  /** 缺口合并去重：gaps 是新后端字段，notes 是同源的兼容别名；老后端只有 notes */
+  const allGaps = data ? [...new Set([...(data.gaps ?? []), ...(data.notes ?? [])])] : [];
+
   useAiPage({
     key: "shortline_opportunities",
     title: "超短线机会发现",
     context: data
       ? `超短线机会发现(${data.clock} 北京时间):\n`
         + `市场相位:${data.phase} | 涨停${data.limit_up_count}只 | 封板率${data.seal_rate != null ? pctText(data.seal_rate * 100) : "—"}\n`
-        + `识别机会:${data.opportunities.length} 只\n`
+        + `识别机会:${data.opportunities.length} 只 | 数据状态:${data.status ?? "未标注(老后端)"}\n`
+        + (allGaps.length
+          ? `⚠️ 本轮数据缺口(下面的空清单或排序要按缺口读,不是完整结论):${allGaps.slice(0, 6).join("；")}\n`
+          : "")
         + (verify
           ? `验证流(盯盘三页的佐证):${verify.head}(${verify.note}) | 支持${verify.counts.支持} 观察${verify.counts.观察} 降级${verify.counts.降级} 回避${verify.counts.回避}\n`
             + verify.gates.map((g) => `- ${g.label}:${g.read}(${g.from})`).join("\n")
@@ -289,7 +295,7 @@ export function ShortlineOpportunities() {
         + (track?.available
           ? `本页战绩:已对账 ${track.settled_count} 只 / 待对账 ${track.pending_count} 只(实测与先验并排在页面)\n`
           : "")
-        + (data.notes.length ? `降级提示:${data.notes.join(";")}` : "")
+        + (allGaps.length > 6 ? `…另有 ${allGaps.length - 6} 条缺口见页面降级提示\n` : "")
       : "超短线机会发现:还没取到。",
     suggestions: ["当前市场适合打板吗", "哪个板块今天最强", "验证流为什么判了回避"],
   });
@@ -305,7 +311,7 @@ export function ShortlineOpportunities() {
     );
   }
 
-  const { limit_up_count, seal_rate, broken_rate, opportunities, by_sector, notes } = data;
+  const { limit_up_count, seal_rate, broken_rate, opportunities, by_sector } = data;
 
   return (
     <div>
@@ -327,7 +333,10 @@ export function ShortlineOpportunities() {
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
           <div>
             <span className="text-muted-foreground">今日涨停</span>
-            <p className="text-base font-semibold">{limit_up_count} 只</p>
+            <p className="text-base font-semibold">
+              {limit_up_count} 只
+              {data.status === "failed" && <span className="ml-1 text-xs font-normal text-warning">没取到，不是 0 家</span>}
+            </p>
           </div>
           <div>
             <span className="text-muted-foreground">封板率</span>
@@ -355,7 +364,7 @@ export function ShortlineOpportunities() {
           )}
         </h2>
         {opportunities.length === 0
-          ? <p className="py-6 text-center text-sm text-muted-foreground">今天没有匹配到模式的机会。</p>
+          ? <p className="py-6 text-center text-sm text-muted-foreground">{emptyOpportunityHint(data)}</p>
           : <div className="space-y-2">
             {(verify ? verify.tagged : opportunities.map((opp) => ({ opp, call: null as OppCall | null, why: "", prior: null as RescoreResult | null }))).map(({ opp: o, call, why, prior }) => (
               <div key={o.code} className="flex items-start gap-3 rounded-lg border border-border/50 px-3 py-2 text-xs">
@@ -433,12 +442,14 @@ export function ShortlineOpportunities() {
         </GlassCard>
       )}
 
-      {/* 数据来源 & 降级提示 */}
-      {(notes.length > 0) && (
+      {/* 数据来源 & 降级提示：缺口合并 gaps / notes，failed 明说「空清单不是没有机会」 */}
+      {(allGaps.length > 0) && (
         <GlassCard>
-          <h2 className="mb-2 text-sm font-semibold text-warning">降级提示</h2>
+          <h2 className="mb-2 text-sm font-semibold text-warning">
+            降级提示{data.status === "failed" ? " · 本轮取数没成功" : data.status === "partial" ? " · 本轮数据不全" : ""}
+          </h2>
           <ul className="space-y-1 text-xs text-warning">
-            {notes.map((n) => <li key={n}>• {n}</li>)}
+            {allGaps.map((n) => <li key={n}>• {n}</li>)}
           </ul>
           <p className="mt-2 text-[11px] text-muted-foreground">数据来源: {data.source}</p>
         </GlassCard>

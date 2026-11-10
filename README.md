@@ -375,6 +375,24 @@ A 股最多查 30 只，持有的优先。某个来源没取到会列在「没�
 
 `data_as_of` 名字沿用旧称，装的是**取数日期**（`fetched_at` 截出的 YYYY-MM-DD），不是内容的数据归属日：开盘前重取昨收类内容时，取数日期是今天而内容是上一交易日的，此刻不会被标「陈旧」。事件维度的环另用《新闻联播》播出日期判定，不靠这张表。改成真实归属日要逐路解析 envelope 的 `as_of` / `record_key`，属行为变更，**待 2026-11-09 盘中实机取证后再动**；在此之前别把它当归属日引用。
 
+### 超短线机会发现：空清单怎么读，以及它不做什么
+
+页面副标题「只列客观模式和条件，不给买卖建议」**没有变**。清单是带证据的**观察池 + 触发条件**，不是「明天哪只会溢价」的预测，也不排名、不下单。
+
+**空清单先看状态，别直接读成「今天没机会」**。返回带 `status` / `gaps`（`notes` 是同源别名，供收盘台账与老前端读）：
+
+| `status` | 空清单的含义 | 页面提示 |
+|---|---|---|
+| `failed` | 这一轮涨停池没取到，`opportunities: []` 只是没数据 | 「清单是空的 ≠ 今天没有机会」，概览标「没取到，不是 0 家」 |
+| `partial` | 有数据但缺了某些路，清单可能不完整 | 「本轮有数据缺口，见下方降级提示」 |
+| `ok` | 才真的是没匹配到模式 | 「今天没有匹配到模式的机会」 |
+
+缺口会合并 `gaps + notes` 去重后同时显示在降级提示里、并带进该页 AI 上下文 —— 界面看得到的缺口，模型也看得到。盘中的 `cn_shortline_daily` 是 `partial`（未收盘定稿），此时算出的封板率是**盘中值**，`gaps` 里会写明，别当收盘数据引用。
+
+**取数契约**（改这里之前先核对 mapper）：五路并行 —— `em_zt_pool`（涨停池，`date` **只认 `YYYYMMDD`**）、`cn_shortline_daily`（`broken_rate`，封板率主源）、`em_limit_up_sentiment`（三池计数，备源）、`cn_shortline_ladder` / `cn_shortline_firstboard`（`extra.result.stocks` 是对象里的数组）。涨停池的 evidence 用 `pool_*` 字段、`record_key` 是股票代码、名称与行业与首封时间写在 `note` 里。任何一路 `failed` 或被 `allSettled` 拒绝都会进 `gaps`，不会被空数组或 0 填平。这整条链 2026-11-10 曾经五处断链、静默返回 0 只且零报错，回归护栏见 `orchestrator/test/shortline_opportunity_contract.test.ts`。
+
+**边界**：模式置信度目前仍是硬编码常量，没有接滚动样本；前端 `patternPrior.ts` 是 2026-10-30 的冻结先验。项目内虽有次日对账数据（`cn_shortline_settled` 的逐只 `ret`、`shortline_samples` 分组统计、18:45 快照 + 次日对账），但用来做「第二天 / 短期溢价预测」的先验还没通过回测三关 —— 本页**不提供**这类预测。收了盘，`opportunity_track` 才会把非空清单存下来开始积累战绩；取数失败或真的空清单都不落盘。
+
 端点目录见 [datasources/CATALOG.md](datasources/CATALOG.md)。
 
 ## 支持的 AI
