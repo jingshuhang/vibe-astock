@@ -9,6 +9,13 @@
 
 ### 修复
 
+- **「整页 40 只全写着回避」里的那句「仓位上限 0%」是编的，实际是 20%**（2026-11-10 14:12，来自用户截图）。
+  - 先分清两层：**全回避本身是对的，不是 bug**。实机 `/view/market_state_view` 为 `composite:75 / phase:修复期 / gate_blockers:["量能 -9.6% vs 20 日均额,需 ≥+10%","上证 3667.48 ≤ MA20 3679.81"] / position_cap_pct:20 / can_open_position:false`，且 `gate_unknown / incomplete_legs / stale_dimensions` 全空 —— 数据齐，不是「算不出来被当 0」。`market_state.ts:497` 的 `canOpenPosition = positionCapPct >= 40 && riskLevel !== "extreme"`，20 < 40 所以不给开新仓，两个字段自洽。`opportunityVerify.ts:97` 的 `closed = cap === 0 || can_open_position === false` 因此为真，按 `:175`「环境明确反对时，模式再漂亮也是接盘」把 40 只全部判回避 —— 这正是 `docs/超短线机会发现思路_研究设计_2026-10-30.md:137`「环境不对，模式再漂亮也不做」与既有测试「清单一只不留地全部回避」的预期。
+  - 截图里「证据:历史胜率 66.7%、均值 +3.3%、比大盘高 28.3pp」是 `prior.evidence`，即**这个模式在历史上、这个情绪环境下的统计**，跟今天能不能开仓不是一层；页面把两层上下并排，只用「证据 / 佐证」区分，从清单中段看很容易读成「证据这么好凭什么回避」。这属于可读性欠账，见下方留白。
+  - **真 bug**：`:176` 把 `closed`（两个成因的或）当成等价于 `cap === 0`，逐股一律写死「仓位上限 0%，环境不给开仓」。同一页 `gate.read`（`:104`）用真实 cap 写「仓位上限 20%」，`note`（`:158`）走的是 `cap === 0 ? … : "信号判了不能开新仓"` —— 三处口径打架。漏测原因：`desktop/test/shortline_opportunities.test.ts` 的 `MKT_CLOSED` fixture 默认 `position_cap_pct: 0`，只覆盖「上限真压到 0」这一支，从没覆盖「上限 20% 但信号不给开新仓」。
+  - 修法：**不动任何判据**。抽 `closedWhy` 与顶部 `note` 共用同一个成因判据，按真实 cap 三态分流（0 / 有值 / 没取到），逐股 `why` 复用它；今天会显示「仓位上限 20%，信号判不能开新仓」。新增 1 条行为测试，用 20% + `can_open_position:false` 复现，断言每只票的 `why` 不许出现 0%、必须出现 20%、且与顶部佐证读数同口径。
+  - 验证：desktop 定向 **7/7**、`tsc --noEmit` 0 错、全量 **472/472**（本轮 +1 条）。
+  - **留白（待拍板，本轮没动）**：① 清单顶部没有一句「本轮 40 只全回避，原因是环境关闭，与个股历史先验无关」，而逐股重复 40 次同一句全局原因，信息量为零；② 「证据」建议改叫「历史先验（不是今天判断）」；③ 要不要在 `can_open_position:false` 时仍给「观察」而非「回避」、或放宽 40% 门槛，属策略判据变更，需回测与实机验证，不能顺手改。**没有重启用户自己启动的 API 服务**，也没 push。
 - **超短线机会发现「一直没有标的」：整条取数链死了却不报错**（2026-11-10 盘中实机取证；P0 只修数据链，不改判据、不改产品口径）。
   - 现象：`GET /view/shortline_opportunities` 恒返回 HTTP 200 + `limit_up_count:0 / opportunities:[] / seal_rate:null / broken_rate:null / notes:[] / phase:"震荡"`，页面据此写「今天没有匹配到模式的机会」。同一时刻 `POST /fetch em_zt_pool date=20261110` 实取 53 只涨停股 / 425 条 evidence —— **上游有数据，下游把取数故障伪装成合法空结果**。连带 18:45 的 `opportunity_track` 快照因空清单不落盘，「本页战绩」也永远为空。
   - 五处断链（逐份核过 mapper 的真实信封）：① `em_zt_pool` 的 `date` 传 `YYYY-MM-DD`，端点只认 `YYYYMMDD`（带横线实测 exit 3 / failed）；② 涨停池按自造字段名 `code / name / limit_up_time / tags / sector` 解析，实际是 `pool_limit_days / pool_amount / pool_turnover / …` 且 `record_key` 才是代码、名称行业首封时间写在 `note` 里 → `ztRows` 恒空；③ 只判 `Promise.allSettled` 的 fulfilled，不判 `envelope.status === "failed"` → 失败信封被吞、notes 恒空；④ `em_limit_up_sentiment` 给的是三池计数，代码却读 `seal_rate / broken_rate / limit_up` → 恒 null、phase 恒「震荡」；⑤ ladder / firstboard 的 `extra.result` 是**含 `stocks` 的对象**被当数组读，且 `boards` 从未赋值 → 五种模式有四种不可达。

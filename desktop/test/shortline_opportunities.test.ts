@@ -114,6 +114,27 @@ test("验证流:仓位上限 0 时环境关闭,清单一只不留地全部回避
   assert.match(gate!.why, /广度/);
 });
 
+test("验证流:上限 20% 但信号不给开新仓时,逐股佐证不许把上限写成 0%(2026-11-10 实机)", async () => {
+  const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
+  const v = r.verifyOpportunities({
+    opps: OPPS, intra: EBB, watch: LADDER_OK,
+    mkt: mktOf({
+      composite: 75, position_cap_pct: 20, can_open_position: false,
+      gate_blockers: ["量能 -9.6% vs 20日均额,需 ≥+10%", "上证 3667.48 ≤ MA20 3679.81"],
+    }),
+  });
+  assert.equal(v.head, "环境关闭，不加", "closed 优先于判断条,裁决不变");
+  assert.equal(v.counts.回避, 4, "上限 20% 仍不给开新仓,全回避是判据的正确执行");
+  assert.equal(v.counts.支持, 0);
+  for (const t of v.tagged) {
+    assert.equal(t.call, "回避", t.opp.code);
+    assert.doesNotMatch(t.why, /仓位上限 0%/, `${t.opp.code} 别把 20% 编成 0%`);
+    assert.match(t.why, /仓位上限 20%/, t.opp.code);
+  }
+  const gate = v.gates.find((g) => g.key === "mktstate");
+  assert.match(gate!.read, /仓位上限 20%/, "顶部佐证读数与逐股文案必须同口径");
+});
+
 test("验证流:判断条能给结论时抄它的 head,不另造词 —— 两页看到的是同一句话", async () => {
   const r = await withRenderer((x) => x.load(DIR + "/opportunityVerify.ts"));
   // 上限不设(市场状态没压),但盘中判断条三灯全报警

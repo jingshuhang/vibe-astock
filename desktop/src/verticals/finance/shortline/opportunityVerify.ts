@@ -153,9 +153,16 @@ export function verifyOpportunities(input: {
   let head: string;
   let note: string;
   let known: boolean;
+  // 顶部 note 与逐股「佐证」共用同一个成因判据。closed 有两个来源：上限真的压到 0、或信号判不能开新仓。
+  // 不能因为合并成一个布尔就把后一种也写成「上限 0%」—— 2026-11-10 实机上限 20% 那轮整页逐股写错。
+  let closedWhy = "";
   if (closed) {
     known = true; tone = "danger"; head = "环境关闭，不加";
     note = cap === 0 ? "市场状态把仓位上限压到 0 —— 下面的清单只是备选，不是今天要做" : "信号判了不能开新仓";
+    closedWhy = cap === 0
+      ? "仓位上限 0%，环境不给开仓"
+      : cap == null ? "信号不给开新仓（仓位上限没取到）"
+        : `仓位上限 ${cap}%，信号判不能开新仓`;
   } else if (verdict?.known) {
     known = true; tone = verdict.tone; head = verdict.head; note = verdict.note;
   } else {
@@ -173,7 +180,7 @@ export function verifyOpportunities(input: {
     const prior = rescoreOpportunity(opp, { phase, mainSectors });
     // 环境明确反对时，模式再漂亮也是接盘
     if (tone === "danger") {
-      return { opp, prior, call: "回避" as const, why: closed ? "仓位上限 0%，环境不给开仓" : `环境判「${head}」` };
+      return { opp, prior, call: "回避" as const, why: closed ? closedWhy : `环境判「${head}」` };
     }
     if (!known) {
       return { opp, prior, call: "观察" as const, why: "盘中佐证不够，只能看模式本身" };
