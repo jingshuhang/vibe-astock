@@ -275,7 +275,7 @@ test("验证流:环境健康时按置信度分流,支持/观察各归各;竞价�
 
   // ① 环境健康:置信 ≥70 支持,不够观察(置信度来自实证查表,不再是模式常数)
   const ok = r.verifyOpportunities({ opps: OPPS, intra: HEALTHY, watch: LADDER_OK, mkt: MKT_OPEN });
-  assert.equal(ok.head, "可做，按清单");
+  assert.equal(ok.head, "没亮红灯", "判断条与验证流同源;不再空指一份不存在的清单");
   assert.equal(callOf(ok, "600002"), "支持", "高标B 5板·主升期历史胜率 73.1%,≥70");
   assert.equal(callOf(ok, "600004"), "观察", "首板D 秒板+共振=68,主升期首板基线 54.8% 卡在 70 下");
   assert.equal(callOf(ok, "600001"), "观察", "首板A 同 68");

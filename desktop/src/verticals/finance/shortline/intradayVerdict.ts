@@ -43,7 +43,7 @@ export interface Verdict {
   tone: LampTone;
   /** 结论只有五个字左右，不写句子 */
   head: string;
-  /** 一句话补充：当天最尖锐的那条读数 */
+  /** 一句话补充：最尖锐的那条读数；三盏灯都没报警时，说明「按什么执行」的条件状态 */
   note: string;
   lamps: Lamp[];
 }
@@ -126,6 +126,25 @@ function highBoardLamp(r: IntradayResult): Lamp {
   };
 }
 
+/**
+ * 三盏灯都没亮红 / 黄时，说明「按什么执行」。
+ *
+ * 旧版写死「按触发清单执行即可」，但判断条上没有清单、也没有入口 —— 那份条件是复盘那晚
+ * 自己写在「明日验证」里的，而且常常是空的（2026-11-11 实机：set_date=2026-11-10、items=0）。
+ * 现在按 checks 三态分流：有条件 → 报条数；有基准日但没写 → 明说去哪补；条件没读到 → 留白不编。
+ */
+function noAlarmNote(r: IntradayResult): string {
+  const checks = r.checks;
+  const items = checks && Array.isArray(checks.items) ? checks.items : null;
+  if (items && items.length > 0) {
+    return `三条判据都没报警；按昨晚写的 ${items.length} 条验证条件执行（盘中只是临时对照，成不成立以收盘为准）`;
+  }
+  if (items && checks.set_date) {
+    return `三条判据都没报警；${checks.set_date} 晚上没写验证条件，先去情绪复盘的「明日验证」补 —— 这里不替你定规矩`;
+  }
+  return "三条判据都没报警；昨晚的验证条件没读到，按哪几条执行这里不写";
+}
+
 export function intradayVerdict(r: IntradayResult): Verdict {
   const lamps = [sealLamp(r), limitDownLamp(r), highBoardLamp(r)];
   const danger = lamps.filter((l) => l.tone === "danger").length;
@@ -137,13 +156,13 @@ export function intradayVerdict(r: IntradayResult): Verdict {
   const head = danger >= 3 ? "退潮中，不加"
     : danger === 2 ? "走弱，别追"
     : danger === 1 ? "分化，选方向"
-    : "可做，按清单";
+    : "没亮红灯";
   const tone: LampTone = danger >= 2 ? "danger" : danger === 1 ? "warning" : "ok";
   // note 只取最尖锐的一条（跌停家数 > 封板率斜率 > 高位板竞价），别堆成小作文
   const PRIORITY: Lamp["key"][] = ["limitdown", "seal", "highboard"];
   const worst = PRIORITY.map((k) => lamps.find((l) => l.key === k))
     .find((l) => l && (l.tone === "danger" || l.tone === "warning")) ?? null;
-  const note = worst ? `${worst.label}：${worst.read}` : "三条判据都没报警，按触发清单执行即可";
+  const note = worst ? `${worst.label}：${worst.read}` : noAlarmNote(r);
   return { known: true, tone, head, note, lamps };
 }
 

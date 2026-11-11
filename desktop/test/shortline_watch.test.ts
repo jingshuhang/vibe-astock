@@ -164,7 +164,9 @@ test("竞价与盘中路径:时点状态、09:25 竞价强弱、路径表(09:25 
     assert.match(t, /昨日涨停股 · 今日竞价强弱\(09:25:20 存\)/);
     assert.match(t, /样本是 2026-10-09 收盘封住的 43 只,取到竞价行情 42 只。口径:当日开盘价 ÷ 昨收。/);
     // 判断条在时点条之前（第一屏），且判据不足时明确写「时点不够」而不是给倾向
-    assert.match(t, /现在做不做 可做，按清单/);
+    assert.match(t, /现在做不做 没亮红灯/);
+    assert.match(t, /按昨晚写的 3 条验证条件执行/, "没报警时说清按哪几条执行,不再空指一份不存在的清单");
+    assert.doesNotMatch(t, /按清单|按触发清单/);
     assert.match(t, /封板率斜率 时点不够/);
     assert.match(t, /\+1\.20% 中位数\(多数人的体感\) \+1\.50% 均值 60% 高开占比\(25\/42\) 3 低开超 5%/);
     assert.match(t, /3板及以上 \(5 只\) \+5\.10% 高开 80%/);
@@ -237,4 +239,45 @@ test("缺拍告警:有缺口才占屏,句子要分得清「程序没在跑」和
     assert.doesNotMatch(textOf(r.html(IntradayView, { r: INTRA, onCapture: null, capturing: false, captureMsg: null })), /缺拍:/);
     assert.doesNotMatch(intradaySummary(INTRA), /缺拍:/);
   });
+});
+
+// ─── 判断条「按什么执行」：不再空指一份不存在的清单 ─────────────────────────────
+test("判断条:昨晚写了条件 —— 报条数并注明盘中只是临时对照,不写「按清单」", async () => {
+  const r = await withRenderer((x) => x.load(`${DIR}/intradayVerdict.ts`));
+  const v = r.intradayVerdict(INTRA);
+  assert.equal(v.known, true);
+  assert.equal(v.head, "没亮红灯");
+  assert.match(v.note, /按昨晚写的 3 条验证条件执行/);
+  assert.match(v.note, /成不成立以收盘为准/);
+  assert.doesNotMatch(v.note, /清单/);
+});
+
+test("判断条:有基准日但那晚没写条件 —— 明说去「明日验证」补,不假装有单子", async () => {
+  const r = await withRenderer((x) => x.load(`${DIR}/intradayVerdict.ts`));
+  const v = r.intradayVerdict({ ...INTRA, checks: { set_date: "2026-11-10", items: [] } });
+  assert.equal(v.head, "没亮红灯");
+  assert.match(v.note, /2026-11-10 晚上没写验证条件/);
+  assert.match(v.note, /明日验证/);
+  assert.doesNotMatch(v.note, /按清单|执行即可/);
+});
+
+test("判断条:条件字段没读到 / 没有基准日 —— 留白,不编「按哪几条」", async () => {
+  const r = await withRenderer((x) => x.load(`${DIR}/intradayVerdict.ts`));
+  const missing = { ...INTRA, checks: { set_date: "2026-11-10", items: null } } as unknown as IntradayResult;
+  const v1 = r.intradayVerdict(missing);
+  assert.match(v1.note, /没读到/);
+  assert.doesNotMatch(v1.note, /按清单|条验证条件执行/);
+  const noBase = r.intradayVerdict({ ...INTRA, checks: { set_date: null, items: [] } });
+  assert.match(noBase.note, /没读到/);
+  assert.doesNotMatch(noBase.note, /按清单/);
+});
+
+test("判断条:亮黄灯但没亮红灯 —— head 仍写「没亮红灯」,note 指回那条读数,不自相矛盾", async () => {
+  const r = await withRenderer((x) => x.load(`${DIR}/intradayVerdict.ts`));
+  const yellow = structuredClone(INTRA) as IntradayResult;
+  yellow.auction!.cohort.by_tier["3板及以上"]!.median = -1;
+  const v = r.intradayVerdict(yellow);
+  assert.equal(v.head, "没亮红灯");
+  assert.match(v.note, /高位板竞价/);
+  assert.doesNotMatch(v.note, /三条判据都没报警/);
 });
