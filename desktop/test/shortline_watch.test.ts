@@ -167,6 +167,8 @@ test("竞价与盘中路径:时点状态、09:25 竞价强弱、路径表(09:25 
     assert.match(t, /现在做不做 没亮红灯/);
     assert.match(t, /按昨晚写的 3 条验证条件执行/, "没报警时说清按哪几条执行,不再空指一份不存在的清单");
     assert.doesNotMatch(t, /按清单|按触发清单/);
+    assert.match(html, /href="\/shortline\/verify"/, "没报警时给一个去「明日验证」的入口");
+    assert.match(t, /打开「明日验证」/);
     assert.match(t, /封板率斜率 时点不够/);
     assert.match(t, /\+1\.20% 中位数\(多数人的体感\) \+1\.50% 均值 60% 高开占比\(25\/42\) 3 低开超 5%/);
     assert.match(t, /3板及以上 \(5 只\) \+5\.10% 高开 80%/);
@@ -280,4 +282,29 @@ test("判断条:亮黄灯但没亮红灯 —— head 仍写「没亮红灯」,no
   assert.equal(v.head, "没亮红灯");
   assert.match(v.note, /高位板竞价/);
   assert.doesNotMatch(v.note, /三条判据都没报警/);
+});
+
+test("判断条:只在三灯都没报警时给「明日验证」入口;报警或判据不足时不给", async () => {
+  const r = await withRenderer(async (x) => ({
+    verdict: await x.load(`${DIR}/intradayVerdict.ts`),
+    bar: await x.load(`${DIR}/IntradayVerdictBar.tsx`),
+    html: x.html,
+  }));
+  const ok = r.verdict.intradayVerdict(INTRA);
+  assert.equal(ok.verifyLink, true);
+  const noWrite = r.verdict.intradayVerdict({ ...INTRA, checks: { set_date: "2026-11-10", items: [] } });
+  assert.equal(noWrite.verifyLink, true, "没写条件时更该给入口");
+  const blank = { ...INTRA, slots: INTRA.slots.map((s) => ({ ...s, snapshot: null, state: "missing" as const })), auction: null };
+  const unknown = r.verdict.intradayVerdict(blank);
+  assert.equal(unknown.known, false);
+  assert.equal(unknown.verifyLink, false);
+  const yellow = structuredClone(INTRA) as IntradayResult;
+  yellow.auction!.cohort.by_tier["3板及以上"]!.median = -1;
+  assert.equal(r.verdict.intradayVerdict(yellow).verifyLink, false, "亮黄灯别把注意力从风险挪走");
+
+  // 组件层真渲染:链接受 verifyLink 控制,不是无条件挂着
+  const htmlOn = r.html(r.bar.IntradayVerdictBar, { v: ok });
+  assert.match(textOf(htmlOn), /打开「明日验证」/);
+  const htmlOff = r.html(r.bar.IntradayVerdictBar, { v: { ...ok, verifyLink: false } });
+  assert.doesNotMatch(htmlOff, /shortline\/verify/);
 });

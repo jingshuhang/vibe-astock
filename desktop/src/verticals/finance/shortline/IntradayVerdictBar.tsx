@@ -59,6 +59,13 @@ export function IntradayVerdictBar({ v }: { v: Verdict }) {
           <div className="text-[12px] text-muted-foreground">现在做不做</div>
           <div className={cn("mt-0.5 text-[22px] font-semibold leading-tight", HEAD_INK[v.tone])}>{v.head}</div>
           <div className="mt-1 max-w-[16rem] text-[12px] leading-snug text-muted-foreground">{v.note}</div>
+          {v.verifyLink && (
+            <a href="/shortline/verify"
+              title="条件由你在「明日验证」里写，这里只给入口，不生成任何建议"
+              className="mt-1.5 inline-flex items-center gap-1 text-[12px] text-primary underline-offset-2 hover:underline">
+              打开「明日验证」 →
+            </a>
+          )}
         </div>
       </div>
       {!v.known && (

@@ -46,6 +46,8 @@ export interface Verdict {
   /** 一句话补充：最尖锐的那条读数；三盏灯都没报警时，说明「按什么执行」的条件状态 */
   note: string;
   lamps: Lamp[];
+  /** 三盏灯都没报警时给一个「明日验证」入口；报警时不开链接，别把注意力从风险挪走 */
+  verifyLink: boolean;
 }
 
 const saved = (r: IntradayResult): SlotRow[] =>
@@ -140,7 +142,7 @@ function noAlarmNote(r: IntradayResult): string {
     return `三条判据都没报警；按昨晚写的 ${items.length} 条验证条件执行（盘中只是临时对照，成不成立以收盘为准）`;
   }
   if (items && checks.set_date) {
-    return `三条判据都没报警；${checks.set_date} 晚上没写验证条件，先去情绪复盘的「明日验证」补 —— 这里不替你定规矩`;
+    return `三条判据都没报警；${checks.set_date} 晚上没写验证条件，这一轮没有条件可对照；下一轮的去「明日验证」写`;
   }
   return "三条判据都没报警；昨晚的验证条件没读到，按哪几条执行这里不写";
 }
@@ -151,7 +153,7 @@ export function intradayVerdict(r: IntradayResult): Verdict {
   const known = lamps.filter((l) => l.tone !== "unknown").length >= 2;
 
   if (!known) {
-    return { known: false, tone: "unknown", head: "先攒时点", note: "至少两个判据有读数才给结论；现在只够看原始数字", lamps };
+    return { known: false, tone: "unknown", head: "先攒时点", note: "至少两个判据有读数才给结论；现在只够看原始数字", lamps, verifyLink: false };
   }
   const head = danger >= 3 ? "退潮中，不加"
     : danger === 2 ? "走弱，别追"
@@ -163,7 +165,7 @@ export function intradayVerdict(r: IntradayResult): Verdict {
   const worst = PRIORITY.map((k) => lamps.find((l) => l.key === k))
     .find((l) => l && (l.tone === "danger" || l.tone === "warning")) ?? null;
   const note = worst ? `${worst.label}：${worst.read}` : noAlarmNote(r);
-  return { known: true, tone, head, note, lamps };
+  return { known: true, tone, head, note, lamps, verifyLink: !worst };
 }
 
 // ─── 区块内联结论（也是纯函数，跟灯同源，不许另算一套） ──────────────────────
