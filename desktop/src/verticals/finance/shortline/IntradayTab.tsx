@@ -191,14 +191,25 @@ const verdictOf = (v: boolean | null) => VERDICT[v === true ? "yes" : v === fals
 
 function Checks({ checks, date, closed, today }: { checks: IntradayResult["checks"]; date: string; closed: boolean; today: boolean }) {
   const items = safeArray<CheckItem>(checks.items);
+  // 「去哪写」由下面的常驻链接承担,文字里不再重复一遍 —— 判断条的入口只在没报警时出现,
+  // 这一块则任何时候(含休市 / 判据报警 / 没快照)都能点到,避免想写条件时找不到入口。
   const empty = closed ? `${date} 休市,没有盘中读数。`
-    : checks.set_date ? `${checks.set_date} 晚上没写验证条件。在情绪复盘的「明日验证」里写。`
-    : today ? "还没存到时点快照,存下第一张后才有读数可对。条件在情绪复盘的「明日验证」里写。"
+    : checks.set_date ? `${checks.set_date} 晚上没写验证条件。`
+    : today ? "还没存到时点快照,存下第一张后才有读数可对。"
     : "这一天没存到时点快照,没有盘中读数可对。";
   return (
     <Section icon={ClipboardCheck} title="昨晚的验证条件 · 盘中读数"
       hint={`${checks.set_date ?? "上一个交易日"} 晚上在「明日验证」里写的条件,拿 ${date} 各时点的读数先对一对。盘中读数只是临时对照,成不成立以收盘为准;只在收盘后才有的读数如实标出来,不硬凑。`}>
-      {items.length === 0 ? <p className="text-[13px] text-muted-foreground">{empty}</p> : (
+      {items.length === 0 ? (
+        <div>
+          <p className="text-[13px] text-muted-foreground">{empty}</p>
+          <a href="/shortline/verify"
+            title="条件由你在「明日验证」里写，这里只给入口，不生成任何建议"
+            className="mt-1.5 inline-flex items-center gap-1 text-[12px] text-primary underline-offset-2 hover:underline">
+            打开「明日验证」写条件 →
+          </a>
+        </div>
+      ) : (
         <div className="space-y-3">
           {items.map((it) => (
             <div key={it.id} className="rounded-lg border border-border/60 px-3 py-2">

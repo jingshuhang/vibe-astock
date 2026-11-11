@@ -308,3 +308,22 @@ test("判断条:只在三灯都没报警时给「明日验证」入口;报警或
   const htmlOff = r.html(r.bar.IntradayVerdictBar, { v: { ...ok, verifyLink: false } });
   assert.doesNotMatch(htmlOff, /shortline\/verify/);
 });
+
+test("「昨晚的验证条件」空态常驻「明日验证」入口,不受判断条报警影响", async () => {
+  await withRenderer(async (r) => {
+    const { IntradayView } = await r.load(`${DIR}/IntradayTab.tsx`);
+    // 三盏灯全 unknown（判据不足）+ 空清单：判断条不给链接，但这一块必须还点得到
+    const blank = {
+      ...INTRA,
+      checks: { set_date: "2026-11-10", items: [] },
+      slots: INTRA.slots.map((s) => ({ ...s, snapshot: null, state: "missing" as const })),
+      auction: null,
+    };
+    const html = r.html(IntradayView, { r: blank, onCapture: null, capturing: false, captureMsg: null });
+    assert.match(html, /href="\/shortline\/verify"/);
+    const t = textOf(html);
+    assert.match(t, /打开「明日验证」写条件/);
+    assert.match(t, /2026-11-10 晚上没写验证条件/);
+    assert.doesNotMatch(t, /在情绪复盘的「明日验证」里写/, "去哪写由链接承担,文字不重复一遍");
+  });
+});
