@@ -43,7 +43,7 @@ const VIEW: MarketCallView = {
       trigger_hit: null, html_path: null,
     }),
   ],
-  caveat: "交易倾向四档(加仓/持有/减仓/观望)与触发条件由 WorkBuddy 大盘全景收盘档产出,本台账只存档与对账,不生成任何大盘建议;触发命中按结构化阈值机器判(≥/≤ 含等于),触发条件原文一直留档供人工复核;对账读数取本系统端点(东财涨跌分布/指数趋势),与全景侧通达信口径可能有小差异。不构成投资建议。",
+  caveat: "交易倾向四档(加仓/持有/减仓/观望)与触发条件由 WorkBuddy 大盘全景收盘档产出,本台账只存档与对账,不生成任何大盘建议;条件命中按结构化阈值机器判(≥/≤ 含等于),触发条件原文一直留档供人工复核;对账读数取本系统端点(东财涨跌分布/指数趋势),与全景侧通达信口径可能有小差异。不构成投资建议。",
   generated_at: "2026-11-06T16:05:00+08:00",
 };
 
@@ -55,14 +55,14 @@ test("台账卡:最新档四档徽标 + 依据 + 结构化触发条件 + 战绩�
     assert.match(t, /共 3 条/);
     assert.match(t, /已对账 2/);
     assert.match(t, /待对账 1/);
-    assert.match(t, /触发命中 1\/2/);
+    assert.match(t, /条件命中 1\/2/);
     // 最新一档:减仓 · 偏空,依据原文,结构化触发条件(广度 ≥/≤ 45)+ 原文括注
     assert.match(t, /减仓/);
     assert.match(t, /偏空/);
     assert.match(t, /广度 32% 转弱、缩量 1\.6 万亿/);
     assert.match(t, /广度 ≤ 45/);
     assert.match(t, /广度破 45% 转减仓/);
-    assert.match(t, /次日已触发/);
+    assert.match(t, /次日条件到了/);
     // html 报告断链不拦落账:只展示文件名
     assert.match(t, /A股大盘全景-2026-11-05\.html/);
   });
@@ -72,13 +72,13 @@ test("台账卡:历史对账并排——写下时与次日读数同屏;判不了
   await withRenderer(async (r) => {
     const { MarketCallCard } = await r.load(PAGE);
     const t = textOf(r.html(MarketCallCard, { view: VIEW, error: "" }));
-    // 11-05:breadth below 45,次日 28.4 ≤ 45 → 已触发(红)
+    // 11-05:breadth below 45,次日 28.4 ≤ 45 → 条件到了(红)
     assert.match(t, /广度 28\.4%/);
     assert.match(t, /涨停 33 \/ 跌 40/);
-    assert.match(t, /已触发/);
-    // 11-04:amount below 15000,次日 16200 > 15000 → 未触发(绿)
+    assert.match(t, /条件到了/);
+    // 11-04:amount below 15000,次日 16200 > 15000 → 没到(绿)
     assert.match(t, /额 16200 亿/);
-    assert.match(t, /未触发/);
+    assert.match(t, /没到/);
     // 11-03:待对账 + 无结构化条件 → 「—」与「待对账」,不出现第三个假状态
     assert.match(t, /待对账/);
     // 读数全缺的行:写下时一列显示「—」
@@ -161,7 +161,7 @@ test("复盘页·当日全景判断:inbox 未落账明说;已落账/已对账各
     const { MarketCallDayCard } = await r.load(REVIEW);
     const inbox = textOf(r.html(MarketCallDayCard, { row: dayRow(), error: null, done: true, bizDay: "2026-10-30" }));
     assert.match(inbox, /交接件在 inbox，还没落账（16:05 扫描后入台账）/);
-    assert.doesNotMatch(inbox, /次日已触发|次日未触发/, "没落账就没有对账结果,不预设触发状态");
+    assert.doesNotMatch(inbox, /次日条件到了|次日没到/, "没落账就没有对账结果,不预设触发状态");
 
     const posted = textOf(r.html(MarketCallDayCard, {
       row: dayRow({ source: "ledger", settled: false }), error: null, done: true, bizDay: "2026-10-30",
@@ -177,7 +177,7 @@ test("复盘页·当日全景判断:inbox 未落账明说;已落账/已对账各
     }));
     assert.match(settled, /已对账 2026-11-02/);
     assert.match(settled, /广度 ≥ 45/);
-    assert.match(settled, /次日已触发/);
+    assert.match(settled, /次日条件到了/);
   });
 });
 

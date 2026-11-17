@@ -281,9 +281,13 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
         <h2 className="text-sm font-semibold">大盘判断台账（全景收盘档）</h2>
         <span className="text-[11px] text-muted-foreground">
           共 {view.total} 条 · 已对账 {view.settled_count} · 待对账 {view.pending_count}
-          {view.judged > 0 ? ` · 触发命中 ${view.hit}/${view.judged}` : ""}
+          {view.judged > 0 ? ` · 条件命中 ${view.hit}/${view.judged}` : ""}
         </span>
       </div>
+
+      <p className="mb-2 text-[10px] text-muted-foreground/70">
+        四档白话：加仓=可加 · 持有=拿着别动 · 减仓=减掉 · 观望=先不开新仓。下面只存档全景的判断，不替你下结论。
+      </p>
 
       {/* 最新一档 */}
       <div className="mb-3 rounded-lg border border-border/50 px-3 py-2">
@@ -304,7 +308,7 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
               ? `${METRIC_LABEL[latest.trigger_metric] ?? latest.trigger_metric} ${OP_LABEL[latest.trigger_op ?? ""] ?? "?"} ${latest.trigger_value}`
               : "—"}
             {latest.trigger ? `（${latest.trigger}）` : ""}
-            {latest.trigger_hit === true ? " · 次日已触发" : latest.trigger_hit === false ? " · 次日未触发" : latest.settled ? " · 次日读数缺，判不了" : ""}
+            {latest.trigger_hit === true ? " · 次日条件到了" : latest.trigger_hit === false ? " · 次日没到" : latest.settled ? " · 次日数据缺，没判" : ""}
           </p>
         )}
         {latest.html_path && (
@@ -323,7 +327,7 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
               <th className="py-1 pr-2 font-normal">档位 · 方向</th>
               <th className="py-1 pr-2 font-normal">写下时读数</th>
               <th className="py-1 pr-2 font-normal">次日读数</th>
-              <th className="py-1 font-normal">触发</th>
+              <th className="py-1 font-normal">条件到了吗</th>
             </tr>
           </thead>
           <tbody>
@@ -338,10 +342,10 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
                 <td className="py-1.5 pr-2 tabular-nums">{r.settled ? readingsText(r, "next_") : <span className="text-warning">{r.source === "inbox" ? "未落账" : "待对账"}</span>}</td>
                 <td className="py-1.5 whitespace-nowrap">
                   {r.trigger_hit === true
-                    ? <span className="text-red-600">已触发</span>
+                    ? <span className="text-red-600">条件到了</span>
                     : r.trigger_hit === false
-                      ? <span className="text-emerald-600">未触发</span>
-                      : <span className="text-muted-foreground">{r.settled ? "判不了" : "—"}</span>}
+                      ? <span className="text-emerald-600">没到</span>
+                      : <span className="text-muted-foreground">{r.settled ? "数据缺，没判" : "—"}</span>}
                 </td>
               </tr>
             ))}
@@ -428,7 +432,7 @@ export function MarketState() {
           ? `大盘判断台账(WorkBuddy 大盘全景收盘档存档,${call.rows[0].date}): ${call.rows[0].call} · ${call.rows[0].direction}`
           + (call.rows[0].basis ? ` — ${call.rows[0].basis}` : "")
           + (call.rows[0].trigger ? `;触发条件: ${call.rows[0].trigger}` : "")
-          + (call.judged > 0 ? `;触发命中战绩 ${call.hit}/${call.judged}(判得了的才计)` : "")
+          + (call.judged > 0 ? `;条件命中战绩 ${call.hit}/${call.judged}(判得了的才计)` : "")
           + `\n${call.caveat}\n`
           : "大盘判断台账: 还没有落账记录(全景收盘档还没落过交接件)。\n")
         + `预期取数来源(设计清单,不代表本次全部取到): ${data.signal.sources.join(", ")}`

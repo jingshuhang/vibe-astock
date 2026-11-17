@@ -132,7 +132,7 @@ export function MarketCallDayCard({ row, error, done, bizDay }: {
                 ? `${METRIC_LABEL[row.trigger_metric] ?? row.trigger_metric} ${OP_LABEL[row.trigger_op ?? ""] ?? "?"} ${row.trigger_value}`
                 : "—"}
               {row.trigger ? `（${row.trigger}）` : ""}
-              {row.source === "inbox" ? "" : row.trigger_hit === true ? " · 次日已触发" : row.trigger_hit === false ? " · 次日未触发" : row.settled ? " · 次日读数缺，判不了" : ""}
+              {row.source === "inbox" ? "" : row.trigger_hit === true ? " · 次日条件到了" : row.trigger_hit === false ? " · 次日没到" : row.settled ? " · 次日数据缺，没判" : ""}
             </p>
           )}
           <p className="mt-1 text-[11px] text-muted-foreground">写下时读数：{readingsText(row, "")}</p>
