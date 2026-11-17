@@ -69,6 +69,18 @@ export const CALL_COLORS: Record<string, string> = {
 export const OP_LABEL: Record<string, string> = { above: "≥", below: "≤" };
 export const METRIC_LABEL: Record<string, string> = { breadth_pct: "广度", limit_up: "涨停家数", limit_down: "跌停家数", amount_yi: "成交额(亿)" };
 
+/**
+ * 从触发条件原文里**转述**全景自己写好的动作词,如「广度跌破55%转减仓」→「转减仓」。
+ * 🔴 只转述不生成:系统不判断该减还是该加,原文写了什么就取什么;取不到就返回 null(不猜)。
+ * 取第一个匹配:结构化 trigger_metric 对应的总是原文第一段(如 11-11「广度跌破55%转减仓;
+ * 广度回70%转加仓」的 below 55 对应前段转减仓)。多段全部列出会误导,所以只取首段。
+ * 「再议」「转更防守」也是全景原文的动作表述,一并转述,不归一成四档。
+ */
+const TRIGGER_ACTION_RE = /转(?:更防守|加仓|减仓|持有|观望)|再议/;
+export function triggerAction(trigger: string | null | undefined): string | null {
+  if (!trigger) return null;
+  return trigger.match(TRIGGER_ACTION_RE)?.[0] ?? null;
+}
 /** 一行读数:「广度 48.6% · 额 16200 亿 · 涨停 58 / 跌 21」;全缺给「—」不伪装 0 */
 export function readingsText(r: MarketCallRow, pre: "next_" | ""): string {
   const b = pre ? r.next_breadth_pct : r.breadth_pct;

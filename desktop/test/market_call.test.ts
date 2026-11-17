@@ -28,7 +28,7 @@ const VIEW: MarketCallView = {
     row({}),
     row({
       date: "2026-11-04", call: "持有", direction: "中性", basis: "主线在但广度收敛",
-      trigger: "失守 3700 转减", trigger_metric: "amount_yi", trigger_op: "below", trigger_value: 15000,
+      trigger: "失守 3700 转减仓", trigger_metric: "amount_yi", trigger_op: "below", trigger_value: 15000,
       breadth_pct: 47.7, amount_yi: 16800, limit_up: 71, limit_down: 8,
       settled_date: "2026-11-05",
       next_breadth_pct: 32.1, next_amount_yi: 16200, next_limit_up_count: 58, next_limit_down_count: 21,
@@ -62,7 +62,7 @@ test("台账卡:最新档四档徽标 + 依据 + 结构化触发条件 + 战绩�
     assert.match(t, /广度 32% 转弱、缩量 1\.6 万亿/);
     assert.match(t, /广度 ≤ 45/);
     assert.match(t, /广度破 45% 转减仓/);
-    assert.match(t, /次日条件到了/);
+    assert.match(t, /次日条件到了 → 全景原文：转减仓/);
     // html 报告断链不拦落账:只展示文件名
     assert.match(t, /A股大盘全景-2026-11-05\.html/);
   });
@@ -75,10 +75,10 @@ test("台账卡:历史对账并排——写下时与次日读数同屏;判不了
     // 11-05:breadth below 45,次日 28.4 ≤ 45 → 条件到了(红)
     assert.match(t, /广度 28\.4%/);
     assert.match(t, /涨停 33 \/ 跌 40/);
-    assert.match(t, /条件到了/);
-    // 11-04:amount below 15000,次日 16200 > 15000 → 没到(绿)
+    assert.match(t, /到了·转减仓/);
+    // 11-04:amount below 15000,次日 16200 > 15000 → 没到(绿),待转减仓
     assert.match(t, /额 16200 亿/);
-    assert.match(t, /没到/);
+    assert.match(t, /没到·待转减仓/);
     // 11-03:待对账 + 无结构化条件 → 「—」与「待对账」,不出现第三个假状态
     assert.match(t, /待对账/);
     // 读数全缺的行:写下时一列显示「—」
@@ -161,7 +161,7 @@ test("复盘页·当日全景判断:inbox 未落账明说;已落账/已对账各
     const { MarketCallDayCard } = await r.load(REVIEW);
     const inbox = textOf(r.html(MarketCallDayCard, { row: dayRow(), error: null, done: true, bizDay: "2026-10-30" }));
     assert.match(inbox, /交接件在 inbox，还没落账（16:05 扫描后入台账）/);
-    assert.doesNotMatch(inbox, /次日条件到了|次日没到/, "没落账就没有对账结果,不预设触发状态");
+    assert.doesNotMatch(inbox, /次日条件到了|次日没到|全景原文/, "没落账就没有对账结果,不预设触发状态");
 
     const posted = textOf(r.html(MarketCallDayCard, {
       row: dayRow({ source: "ledger", settled: false }), error: null, done: true, bizDay: "2026-10-30",
@@ -177,7 +177,7 @@ test("复盘页·当日全景判断:inbox 未落账明说;已落账/已对账各
     }));
     assert.match(settled, /已对账 2026-11-02/);
     assert.match(settled, /广度 ≥ 45/);
-    assert.match(settled, /次日条件到了/);
+    assert.match(settled, /次日条件到了 → 全景原文：转持有/);
   });
 });
 
@@ -196,4 +196,14 @@ test("复盘页·当日全景判断:没有当天记录 / 取数失败 / 还在�
     assert.match(loading, /加载中/);
     assert.doesNotMatch(loading, /没有对应的全景判断/, "还没加载完不能说「没有」");
   });
+});
+
+test("triggerAction:只转述全景原文写好的动作词,取首段,取不到就 null 不猜", async () => {
+  const { triggerAction } = await import("../src/verticals/finance/lib/marketCall.ts");
+  assert.equal(triggerAction("广度跌破55%转减仓；广度回70%且科技主力四连转加仓"), "转减仓", "多段只取首段(结构化条件对应的段)");
+  assert.equal(triggerAction("上证收复3660且广度回35%再议"), "再议", "「再议」也是原文动作,不归一成四档");
+  assert.equal(triggerAction("上证收复3650且广度回55%转持有，失守3580.38转更防守"), "转持有");
+  assert.equal(triggerAction("站回3660转持有"), "转持有");
+  assert.equal(triggerAction("待放量选方向"), null, "原文没写动作就不猜");
+  assert.equal(triggerAction(null), null);
 });

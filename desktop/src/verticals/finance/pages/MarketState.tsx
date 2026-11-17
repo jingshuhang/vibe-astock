@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import type { MarketStateResult, Dimension } from "@/lib/marketState";
 import { DIMENSION_LABELS, RISK_LEVEL_META, RISK_LEVEL_HINT, PHASE_COLORS, weightPct } from "@/lib/marketState";
 /** 四档徽标配色 / 触发比较符 / 读数行:统一在 lib/marketCall,与每日复盘页共用一份 */
-import { CALL_COLORS, OP_LABEL, METRIC_LABEL, readingsText, type MarketCallView } from "@/lib/marketCall";
+import { CALL_COLORS, OP_LABEL, METRIC_LABEL, readingsText, triggerAction, type MarketCallView } from "@/lib/marketCall";
 
 const BTN = "inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50";
 
@@ -308,7 +308,11 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
               ? `${METRIC_LABEL[latest.trigger_metric] ?? latest.trigger_metric} ${OP_LABEL[latest.trigger_op ?? ""] ?? "?"} ${latest.trigger_value}`
               : "—"}
             {latest.trigger ? `（${latest.trigger}）` : ""}
-            {latest.trigger_hit === true ? " · 次日条件到了" : latest.trigger_hit === false ? " · 次日没到" : latest.settled ? " · 次日数据缺，没判" : ""}
+            {latest.trigger_hit === true
+              ? ` · 次日条件到了${triggerAction(latest.trigger) ? ` → 全景原文：${triggerAction(latest.trigger)}` : ""}`
+              : latest.trigger_hit === false
+                ? ` · 次日没到${triggerAction(latest.trigger) ? `（到了则${triggerAction(latest.trigger)}）` : ""}`
+                : latest.settled ? " · 次日数据缺，没判" : ""}
           </p>
         )}
         {latest.html_path && (
@@ -342,9 +346,9 @@ export function MarketCallCard({ view, error }: { view: MarketCallView | null; e
                 <td className="py-1.5 pr-2 tabular-nums">{r.settled ? readingsText(r, "next_") : <span className="text-warning">{r.source === "inbox" ? "未落账" : "待对账"}</span>}</td>
                 <td className="py-1.5 whitespace-nowrap">
                   {r.trigger_hit === true
-                    ? <span className="text-red-600">条件到了</span>
+                    ? <span className="text-red-600">到了·{triggerAction(r.trigger) ?? "按原文"}</span>
                     : r.trigger_hit === false
-                      ? <span className="text-emerald-600">没到</span>
+                      ? <span className="text-emerald-600">没到·待{triggerAction(r.trigger) ?? "看条件"}</span>
                       : <span className="text-muted-foreground">{r.settled ? "数据缺，没判" : "—"}</span>}
                 </td>
               </tr>

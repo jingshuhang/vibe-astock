@@ -18,7 +18,7 @@ import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { ReviewTiersCard } from "@/components/ReviewTiersCard";
 import { TIER_PROMPT_RULES, tiersSummary, type ReviewTiersResult } from "@/lib/reviewTiers";
 import { BREADTH_RULE, SPECULATION_RULE, aboveMa, blockOf, parseReview, reviewLines, staleNote, yiText, type ReviewBlockId } from "@/lib/marketReview";
-import { CALL_COLORS, METRIC_LABEL, OP_LABEL, readingsText, type MarketCallRow, type MarketCallView } from "@/lib/marketCall";
+import { CALL_COLORS, METRIC_LABEL, OP_LABEL, readingsText, triggerAction, type MarketCallRow, type MarketCallView } from "@/lib/marketCall";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
@@ -132,7 +132,7 @@ export function MarketCallDayCard({ row, error, done, bizDay }: {
                 ? `${METRIC_LABEL[row.trigger_metric] ?? row.trigger_metric} ${OP_LABEL[row.trigger_op ?? ""] ?? "?"} ${row.trigger_value}`
                 : "—"}
               {row.trigger ? `（${row.trigger}）` : ""}
-              {row.source === "inbox" ? "" : row.trigger_hit === true ? " · 次日条件到了" : row.trigger_hit === false ? " · 次日没到" : row.settled ? " · 次日数据缺，没判" : ""}
+              {row.source === "inbox" ? "" : row.trigger_hit === true ? ` · 次日条件到了${triggerAction(row.trigger) ? ` → 全景原文：${triggerAction(row.trigger)}` : ""}` : row.trigger_hit === false ? ` · 次日没到${triggerAction(row.trigger) ? `（到了则${triggerAction(row.trigger)}）` : ""}` : row.settled ? " · 次日数据缺，没判" : ""}
             </p>
           )}
           <p className="mt-1 text-[11px] text-muted-foreground">写下时读数：{readingsText(row, "")}</p>
